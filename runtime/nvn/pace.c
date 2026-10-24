@@ -100,6 +100,24 @@ static bool hold_30(bool on) {
 }
 
 #if PHONE_DISPLAY
+// (the [phone] log line, runtime/nvn/metal.m) the game thread per frame since the last call: busy time (average, most)
+// and the longest frame period
+static double g_phone_busy_sum, g_phone_busy_max, g_phone_period_max;
+static int g_phone_n;
+void pace_phone_stats(double *busy_avg, double *busy_max, double *period_max) {
+    *busy_avg = g_phone_n ? g_phone_busy_sum / g_phone_n : -1, *busy_max = g_phone_busy_max, *period_max = g_phone_period_max;
+    g_phone_busy_sum = g_phone_busy_max = g_phone_period_max = 0, g_phone_n = 0;
+}
+// (the same line) the game's frame controller: least / most / current extra vsyncs (+0x4e2 / +0x4e3 / +0x4e0, +0x4e1)
+bool pace_phone_controller(uint8_t out[4]) {
+    if (!g_ga) return false;
+    uint64_t fw = *(volatile uint64_t *)(uintptr_t)GA(GAME_MGR);
+    if (!fw) return false;
+    const volatile uint8_t *c = (const volatile uint8_t *)(uintptr_t)(fw + 0x4e0);
+    out[0] = c[2], out[1] = c[3], out[2] = c[0], out[3] = c[1];
+    return true;
+}
+
 // Phone: the game's own 30 fps mode allowed (Frame Rate 30) or not (60): its frame controller's most extra vsyncs
 // (+0x4e3, 1 normally) is 0 while not allowed - the value the game has when it has no 30 fps mode at all - and the
 // game's own value again when allowed. Re-asserted every frame (the controller is rebuilt by a boot).
@@ -226,6 +244,17 @@ void pace_frame(void) {
     //   frame rate halving when the phone warms up. Dynamic Resolution (output_scale.c) can keep 60 instead.
     //   Drop to 30 FPS When Slow (phone_auto30, off by default): on, the hold below and the game's own mode as on the
     //   desktop. Independent of Dynamic Resolution (the player's two choices: each acts on its own).
+    {   // (the [phone] log line: the game thread's time per frame - busy is the period less its waits)
+        static uint64_t last, last_w;
+        uint64_t now = plat_now_ns(), w = g_blocked_ns;
+        if (last) {
+            double p = (now - last) / 1e6, busy = (now - last > w - last_w ? now - last - (w - last_w) : 0) / 1e6;
+            g_phone_busy_sum += busy, g_phone_n++;
+            if (busy > g_phone_busy_max) g_phone_busy_max = busy;
+            if (p > g_phone_period_max) g_phone_period_max = p;
+        }
+        last = now, last_w = w;
+    }
     bool phone30 = g_settings.phone_frame_rate == PHONE_FPS_30;
     if (phone30 || !g_settings.phone_auto30) {
         game_30_mode(phone30);

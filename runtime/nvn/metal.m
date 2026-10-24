@@ -1347,9 +1347,12 @@ static int g_presents_inflight;  // present command buffers committed and not ye
 static OutScale g_ph_os;
 static double g_ph_dw, g_ph_dh, g_ph_game_ms = -1, g_ph_win_ms = -1, g_ph_game_sum, g_ph_win_sum;
 static int g_ph_n;
+static int g_ph_late;           // presents more than a 60 Hz refresh and a half after the one before (missed one)
+static double g_ph_gpu_max;     // the longest game GPU frame
 static void phone_note_frame(const OutScale *os, double dw, double dh, double game_ms, double win_ms) {
     g_ph_os = *os, g_ph_dw = dw, g_ph_dh = dh, g_ph_game_ms = game_ms, g_ph_win_ms = win_ms;
     if (game_ms >= 0 && win_ms >= 0) g_ph_game_sum += game_ms, g_ph_win_sum += win_ms, g_ph_n++;
+    if (game_ms > g_ph_gpu_max) g_ph_gpu_max = game_ms;
 }
 static const char *thermal_name(NSProcessInfoThermalState s) {
     return s == NSProcessInfoThermalStateNominal ? "nominal" : s == NSProcessInfoThermalStateFair ? "fair"
@@ -1361,21 +1364,35 @@ static void phone_memory(double *used_mb, double *left_mb) {
     *used_mb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS ? vi.phys_footprint / 1048576.0 : -1;
     *left_mb = os_proc_available_memory() / 1048576.0;  // (before iOS closes the app: its memory limit minus the above)
 }
+static void phone_note_present_gap(double gap_s) { if (gap_s > 1.5 / 60) g_ph_late++; }
 static void phone_log_line(double now, double fps) {
     static double last;
-    if (now - last < 10) return;
+    if (now - last < 5) return;
+    double span = last > 0 ? now - last : 0;
     last = now;
     double used, left;
     phone_memory(&used, &left);
     extern double output_scale_dynamic_factor(void);
+    extern void pace_phone_stats(double *busy_avg, double *busy_max, double *period_max);
+    extern bool pace_phone_controller(uint8_t out[4]);
+    double busy, busy_max, period_max;
+    pace_phone_stats(&busy, &busy_max, &period_max);
+    uint8_t fc[4] = {0, 0, 0, 0};
+    bool have_fc = pace_phone_controller(fc);
     NSProcessInfo *pi = [NSProcessInfo processInfo];
-    LOG("[phone] t=%.0f %.1f fps | screen %.0fx%.0f, render %.0fx%.0f (of %.0fx%.0f, dynamic %s %.2f) | 30 fps hold %s | "
-        "gpu game %.1f + window %.1f ms | heat %s%s | memory %.0f MB, %.0f MB left | frame rate setting %d\n",
-        now, fps, g_ph_dw, g_ph_dh, 1920 * g_ph_os.sx, 1080 * g_ph_os.sy, 1920 * g_ph_os.ax, 1080 * g_ph_os.ay,
-        g_settings.phone_dynamic ? "on" : "off", output_scale_dynamic_factor(), pace_is_slow() ? "ON" : "off",
-        g_ph_n ? g_ph_game_sum / g_ph_n : -1, g_ph_n ? g_ph_win_sum / g_ph_n : -1, thermal_name(pi.thermalState),
-        pi.lowPowerModeEnabled ? ", Low Power Mode" : "", used, left, g_settings.phone_frame_rate);
-    g_ph_game_sum = g_ph_win_sum = 0, g_ph_n = 0;
+    // (fps: the last 2 s; missed: presents in the last 5 s that came a refresh late; frame controller: the game's own
+    //  least / most / current extra vsyncs - all 0 at a steady 60)
+    LOG("[phone] t=%.0f %.1f fps, %d missed refreshes in %.0f s | game thread busy %.1f ms (most %.1f), longest frame %.1f ms "
+        "| gpu game %.1f (most %.1f) + window %.1f ms | render %.0fx%.0f of %.0fx%.0f (screen %.0fx%.0f, dynamic %s %.2f) | "
+        "30 fps hold %s, auto 30 %s, game frame controller %s%u/%u/%u,%u | heat %s%s | memory %.0f MB, %.0f MB left | "
+        "menu %s\n",
+        now, fps, g_ph_late, span, busy, busy_max, period_max, g_ph_n ? g_ph_game_sum / g_ph_n : -1, g_ph_gpu_max,
+        g_ph_n ? g_ph_win_sum / g_ph_n : -1, 1920 * g_ph_os.sx, 1080 * g_ph_os.sy, 1920 * g_ph_os.ax, 1080 * g_ph_os.ay,
+        g_ph_dw, g_ph_dh, g_settings.phone_dynamic ? "on" : "off", output_scale_dynamic_factor(),
+        pace_is_slow() ? "ON" : "off", g_settings.phone_auto30 ? "on" : "off", have_fc ? "" : "(none) ", fc[0], fc[1],
+        fc[2], fc[3], thermal_name(pi.thermalState), pi.lowPowerModeEnabled ? ", Low Power Mode" : "", used, left,
+        menu_is_open() ? "open" : "closed");
+    g_ph_game_sum = g_ph_win_sum = 0, g_ph_n = 0, g_ph_late = 0, g_ph_gpu_max = 0;
 }
 static void phone_log_start(void) {  // (once: the device's GPU and limits, and the phone settings)
     double used, left;
@@ -1684,6 +1701,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
     if (hitch_ms < 0) hitch_ms = getenv("LARECOMP_LOG_HITCH_MS") ? atof(getenv("LARECOMP_LOG_HITCH_MS")) : 0;
     if (hitch_ms > 0 && prev_present > 0 && (now - prev_present) * 1000 > hitch_ms)
         LOG("[hitch] t=%.2f frame %llu gap %.0f ms\n", now, (unsigned long long)frame, (now - prev_present) * 1000);
+#if TARGET_OS_IPHONE
+    if (prev_present > 0) phone_note_present_gap(now - prev_present);
+#endif
     prev_present = now;
     if (now - last_fps_time >= fps_iv) {
         extern const char *game_level_name(void);

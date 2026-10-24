@@ -90,6 +90,7 @@ void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
     g_open.store(open);
+    fprintf(stderr, "[menu] %s at %.1f s\n", open ? "opened" : "closed", SDL_GetTicks() / 1000.0);  // (perf around it)
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
     if (open) {

@@ -228,7 +228,10 @@ static bool pointer_root(const char *home, char *out, size_t n) {
 bool rt_data_root_early(char *out, size_t n) {
     const char *env = getenv("LARECOMP_DATA_ROOT");
     if (env && *env) return (size_t)snprintf(out, n, "%s", env) < n;
+#if !TARGET_OS_IPHONE  // (iOS: never dev mode - the app starts in its own bundle, which may hold extracted/ itself:
+                       //  tools/ios/add_game_files.ps1; the data folder is always Documents)
     if (is_dir("extracted")) return false;  // (dev mode)
+#endif
     char home[1024];
     default_home(home, sizeof home);
     if (!pointer_root(home, out, n) || !is_dir(out)) snprintf(out, n, "%s", home);
@@ -302,7 +305,9 @@ void rt_paths_init(void) {
     char root[1024];
     const char *env = getenv("LARECOMP_DATA_ROOT");
     if (env && *env) snprintf(root, sizeof root, "%s", env);
+#if !TARGET_OS_IPHONE  // (never on iOS: rt_data_root_early)
     else if (is_dir("extracted")) snprintf(root, sizeof root, "%s", g_start), g_dev = true;  // dev / portable: as before
+#endif
     else {
         snprintf(root, sizeof root, "%s", g_home);
         char ptr[1024];

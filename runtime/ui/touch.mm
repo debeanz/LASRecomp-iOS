@@ -632,18 +632,31 @@ void phone_rows_draw(void) {
 #if TOUCH_PHONE && defined(__OBJC__)
 static void share_logs(void) {
     fflush(stderr);
+    // this session's log, the two before it (a problem seen, then the app restarted) and the last error message
+    NSString *dir = @(rt_data_root());
     NSMutableArray *items = [NSMutableArray array];
-    for (const char *name : {"lasrecomp.log", "last_error.txt"}) {
-        char p[1200];
-        snprintf(p, sizeof p, "%s/%s", rt_data_root(), name);
-        if (access(p, R_OK) == 0) [items addObject:[NSURL fileURLWithPath:@(p)]];
+    for (NSString *name in @[@"lasrecomp.log", @"last_error.txt"]) {
+        NSString *p = [dir stringByAppendingPathComponent:name];
+        if ([[NSFileManager defaultManager] isReadableFileAtPath:p]) [items addObject:[NSURL fileURLWithPath:p]];
     }
+    NSArray *all = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+    NSArray *backups = [[all filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'lasrecomp-backup-'"]]
+        sortedArrayUsingSelector:@selector(compare:)];  // (named by date: the newest last)
+    for (NSUInteger i = backups.count > 2 ? backups.count - 2 : 0; i < backups.count; i++)
+        [items addObject:[NSURL fileURLWithPath:[dir stringByAppendingPathComponent:backups[i]]]];
     SDL_Window *win = ui_window();
     UIWindow *w = win ? (__bridge UIWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(win),
                                                                     SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL) : nil;
     UIViewController *vc = w.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
-    if (!vc || items.count == 0) { fprintf(stderr, "[phone] Share Log: nothing to share / no window\n"); return; }
+    if (!vc || items.count == 0) {  // (say so: a silent button looks broken)
+        char msg[1400];
+        snprintf(msg, sizeof msg, "%s\n\nLog folder: %s", items.count == 0 ? "No log file was found to share."
+                                                                           : "Couldn't open the share sheet.", rt_data_root());
+        fprintf(stderr, "[phone] Share Log: %s\n", msg);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Share Log", msg, win);
+        return;
+    }
     UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
     a.popoverPresentationController.sourceView = vc.view;  // (iPad: a popover from the middle of the screen)
     a.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(vc.view.bounds), CGRectGetMidY(vc.view.bounds), 1, 1);
