@@ -34,8 +34,6 @@ GUEST_ORIGIN ?= 0x7000000000
 ifeq ($(PLATFORM),ios)
 GEN      := generated-ios
 B        := build/ios
-# (runtime/rt.h: the iOS address space ends far below 0x70_0000_0000)
-GUEST_ORIGIN := 0x800000000
 endif
 # (iOS shares the macOS host layer)
 PLATFORM_SRC := $(if $(filter ios,$(PLATFORM)),macos,$(PLATFORM))

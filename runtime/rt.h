@@ -31,19 +31,16 @@ static inline void __attribute__((format(printf, 1, 2))) rt_log(const char *fmt,
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
-// iOS: an app's address space ends far below that (about 64 GB with the extended virtual addressing entitlement), so
-// the same window sits at GUEST_ORIGIN 0x8_0000_0000 there (32 GB, above the shared cache). The game is
-// position-independent (its modules are loaded and relocated at MAIN_BASE / SDK_BASE), so only the origin moves: the
-// address tables (game_addresses/*.h) keep the addresses of the 0x70_0000_0000 layout and are shifted by GUEST_SHIFT
-// where they are read (runtime/game_addresses.c, tools/game_addresses.py with LASRECOMP_GUEST_ORIGIN), and the game
-// code must be generated for the same origin (`make gen GUEST_ORIGIN=...`).
+// iOS (with the extended virtual addressing entitlement) maps the same window there: a 12.5 GB request lands at
+// 0x70_0000_0000 by itself (iPhone, LiveContainer, 2026-10-24), while 0x8_0000_0000 - the first choice - was taken.
+// The origin can still move (another platform's address space): the game is position-independent (its modules are
+// loaded and relocated at MAIN_BASE / SDK_BASE), the address tables (game_addresses/*.h) keep the addresses of the
+// 0x70_0000_0000 layout and are shifted by GUEST_SHIFT where they are read (runtime/game_addresses.c,
+// tools/game_addresses.py with LASRECOMP_GUEST_ORIGIN), and the game code is generated for the same origin
+// (`make gen GUEST_ORIGIN=...`, -DGUEST_ORIGIN=... for the runtime).
 #define GUEST_ORIGIN_DEFAULT 0x7000000000ull
 #ifndef GUEST_ORIGIN
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-#define GUEST_ORIGIN 0x0800000000ull
-#else
 #define GUEST_ORIGIN GUEST_ORIGIN_DEFAULT
-#endif
 #endif
 #define GUEST_SHIFT  ((uint64_t)(GUEST_ORIGIN - GUEST_ORIGIN_DEFAULT))  // (added modulo 2^64: negative on iOS)
 #define GUEST_LO     (GUEST_ORIGIN + 0x0000000000ull)

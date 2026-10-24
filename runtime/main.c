@@ -56,9 +56,9 @@ static void check_guest_space(void) {
     if (g_guest_reserved) return;
     const char *why = getenv("LARECOMP_REEXEC_WHY");
     char msg[512];
-    snprintf(msg, sizeof msg, "LAS Recomp could not reserve its game memory (%llx-%llx).\n\nThis iPhone build needs the "
-             "Extended Virtual Addressing and Increased Memory Limit entitlements: sign it with them (SideStore / "
-             "AltStore keep the app's entitlements; some free signing services strip them).\n\n%s",
+    snprintf(msg, sizeof msg, "LAS Recomp could not reserve its game memory (%llx-%llx).\n\n%s\n\nIt needs the Extended "
+             "Virtual Addressing and Increased Memory Limit entitlements (in LiveContainer: LiveContainer's own). Please "
+             "send this message and lasrecomp.log from the app's folder.",
              GUEST_LO, GUEST_HI, why ? why : "");
     fprintf(stderr, "FATAL: %s\n", msg);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", msg, NULL);

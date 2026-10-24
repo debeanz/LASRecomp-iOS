@@ -110,11 +110,25 @@ void plat_init(void) {
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
     if (p == (void *)(uintptr_t)lo) return true;
-    char why[200];
-    snprintf(why, sizeof why, "mmap %llx-%llx gave %p, errno %d (extended virtual addressing entitlement missing?)",
-             (unsigned long long)lo, (unsigned long long)hi, p, errno);
+    int err = errno;
+    char why[320];
+    if (p == MAP_FAILED)  // (no room for it anywhere: the address space is the small one)
+        snprintf(why, sizeof why, "mmap of %llu MB failed, errno %d: the extended virtual addressing entitlement is "
+                 "probably missing", (unsigned long long)((hi - lo) >> 20), err);
+    else {
+        // room elsewhere, so the large address space is there: something already holds the window - say what
+        vm_address_t a = (vm_address_t)lo;
+        vm_size_t sz = 0;
+        natural_t depth = 0;
+        struct vm_region_submap_info_64 info;
+        mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+        kern_return_t kr = vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, (vm_region_recurse_info_t)&info, &cnt);
+        snprintf(why, sizeof why, "the range is in use (iOS offered %p instead): %s %llx-%llx (tag %u, prot %d)", p,
+                 kr == KERN_SUCCESS ? "region" : "region lookup failed near", (unsigned long long)a,
+                 (unsigned long long)(a + sz), kr == KERN_SUCCESS ? info.user_tag : 0, kr == KERN_SUCCESS ? info.protection : 0);
+        munmap(p, hi - lo);
+    }
     setenv("LARECOMP_REEXEC_WHY", why, 1);
-    if (p != MAP_FAILED) munmap(p, hi - lo);
     return false;
 }
 

@@ -83,9 +83,9 @@ Below them: the upscaler (MetalFX), anti-aliasing, blur removal and the Hero Mod
 - The game code is built into the app when the IPA is built, not on the device: a new game version needs a new IPA.
 - The randomizer's seed generator doesn't run on iOS. Seeds made with the desktop version can be copied into
   **LAS Recomp > rando** and played.
-- The game's memory sits at a different place in the address space (`runtime/rt.h`, `GUEST_ORIGIN`): the iPhone's
-  address space ends far below where the desktop versions put it. The app needs the *extended virtual addressing* and
-  *increased memory limit* entitlements for it (`tools/ios/entitlements.plist`); without them it says so at start.
+- The game's memory is a 12.5 GB address window at the same place as on the desktop (`runtime/rt.h`,
+  `GUEST_ORIGIN`): that needs the *extended virtual addressing* and *increased memory limit* entitlements
+  (`tools/ios/entitlements.plist`); without them, or with the window taken, the app says so at start.
 - iPhone GPUs can't sample BC textures: they're decoded when loaded (`runtime/nvn/bcdec.c`, checked against the
   GPU's own decoding on every build).
 - Logs: **LAS Recomp > lasrecomp.log** in the Files app (attach it to bug reports).
