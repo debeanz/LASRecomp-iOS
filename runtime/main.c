@@ -1,5 +1,11 @@
 // LAS Recomp entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if TARGET_OS_IPHONE
+#include <SDL3/SDL_main.h>  // (iOS: SDL runs UIApplicationMain and calls main below as SDL_main on the main thread)
+#endif
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +46,25 @@ static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 // LARECOMP_REEXEC_FORCE=1 (test): the first process skips the reservation once and starts again, as when the range is
 // taken (the new process has LARECOMP_REEXEC set and reserves normally).
 #define REEXEC_FORCED "forced by LARECOMP_REEXEC_FORCE"
+#if TARGET_OS_IPHONE
+// iOS: no re-exec. The window is claimed before anything else runs (the app's own constructors), so a failure means the
+// address space is too small: main() says so once the app (and with it UIKit) is up.
+static bool g_guest_reserved;
+__attribute__((constructor(101))) static void reserve_guest_space(void) { g_guest_reserved = plat_reserve_guest(GUEST_LO, GUEST_HI); }
+static void check_guest_space(void) {
+    if (g_guest_reserved) return;
+    const char *why = getenv("LARECOMP_REEXEC_WHY");
+    char msg[512];
+    snprintf(msg, sizeof msg, "LAS Recomp could not reserve its game memory (%llx-%llx).\n\nThis iPhone build needs the "
+             "Extended Virtual Addressing and Increased Memory Limit entitlements: sign it with them (SideStore / "
+             "AltStore keep the app's entitlements; some free signing services strip them).\n\n%s",
+             GUEST_LO, GUEST_HI, why ? why : "");
+    fprintf(stderr, "FATAL: %s\n", msg);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LAS Recomp", msg, NULL);
+    exit(1);
+}
+#else
+static void check_guest_space(void) {}
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     const char *force = getenv("LARECOMP_REEXEC_FORCE");
     bool forced = force && *force && strcmp(force, "0") && !getenv("LARECOMP_REEXEC");
@@ -59,6 +84,7 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     perror("re-exec");
     exit(1);
 }
+#endif
 
 // ------------------------------------------------------------------ boot / in-place reboot
 // Switching seeds (or vanilla) and going back to the start screen reboot the game inside this process: the window,
@@ -204,6 +230,7 @@ static void log_startup_info(void) {
 int main(int argc, char **argv) {
     plat_init();
     log_startup_info();
+    check_guest_space();
     if (getenv("LARECOMP_REEXEC")) {  // (reserve_guest_space started this process again)
         const char *why = getenv("LARECOMP_REEXEC_WHY"), *n = getenv("LARECOMP_REEXEC");
         if (!why) LOG("[boot] started again (try %s) (LARECOMP_REEXEC set by the caller)\n", n);

@@ -16,6 +16,43 @@
 static const GameLibTables *g_tables;
 static char g_error[256];
 
+#ifdef GAMELIB_STATIC
+// iOS: the game code is linked into the app itself (built from the player's own game files when the app was built:
+// tools/ios/), never loaded from a file - an app may only run the code it was signed with. The same id check as a
+// library's: game files of another version than the one it was built from are refused.
+const GameLibTables *lasgame_tables(void);
+
+static bool static_matches(const char *game_dir, char *want, size_t n) {
+    if (!game_dir || !gamelib_full_id(game_dir, want, n)) return false;
+    const GameLibTables *t = lasgame_tables();
+    return t && t->abi == GAMELIB_ABI && t->id && !strcmp(t->id, want);
+}
+
+bool gamelib_present(const char *game_dir) {
+    char want[GAMELIB_FULL_ID_SIZE];
+    return g_tables || static_matches(game_dir, want, sizeof want);
+}
+
+bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+    if (g_tables) return true;
+    char want[GAMELIB_FULL_ID_SIZE] = "";
+    if (static_matches(game_dir, want, sizeof want)) {
+        g_tables = lasgame_tables();
+        LOG("[gamelib] built in (%llu + %llu functions)\n", (unsigned long long)*g_tables->main_count,
+            (unsigned long long)*g_tables->sdk_count);
+        return true;
+    }
+    if (why) {
+        if (!want[0]) snprintf(why, why_size, "the game files' exefs/main is missing or unreadable");
+        else snprintf(why, why_size, "this app was built from another version of the game (built for %s, the game "
+                      "files are %s): build the app again from these game files", lasgame_tables()->id, want);
+    }
+    return false;
+}
+
+const GameLibTables *gamelib_tables(void) { return g_tables; }
+#else
+
 // The library's id file (<library>.id, written next to it by the build): its id (gamelib_full_id), read without
 // loading it.
 static bool id_matches(const char *lib, const char *want) {
@@ -108,3 +145,4 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
 }
 
 const GameLibTables *gamelib_tables(void) { return g_tables; }
+#endif  // GAMELIB_STATIC

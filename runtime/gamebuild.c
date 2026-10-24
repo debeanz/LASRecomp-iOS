@@ -154,6 +154,9 @@ static bool find_tools(Tools *t) {
 }
 
 bool gamebuild_available(void) {
+#ifdef GAMELIB_STATIC
+    return false;  // (iOS: the game code is built into the app; nothing is compiled on the device)
+#endif
     Tools t;
     return find_tools(&t);
 }

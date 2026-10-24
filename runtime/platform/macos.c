@@ -1,12 +1,20 @@
-// macOS host layer (runtime/platform.h).
+// macOS host layer (runtime/platform.h). Also the iOS one (TARGET_OS_IPHONE): the same Mach / POSIX calls, without
+// alert windows from any thread (CFUserNotification), child processes or re-exec - nothing an app may do there.
+#include <TargetConditionals.h>
 #include <CoreFoundation/CoreFoundation.h>
+#if TARGET_OS_IPHONE
+#include <SDL3/SDL_messagebox.h>
+#endif
 #include <crt_externs.h>
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
+#include <errno.h>
 #include <mach/thread_policy.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -38,7 +46,12 @@ static char g_log_path[1024];
 static void log_to_file_in_app(void) {
     char exe[1024];
     uint32_t sz = sizeof exe;
+#if TARGET_OS_IPHONE
+    (void)sz;  // (always an app: the log goes to the data folder, Files > LAS Recomp, attached to bug reports)
+    if (getenv("LARECOMP_LOG_STDERR")) return;  // (Xcode's console instead)
+#else
     if (isatty(STDERR_FILENO) || _NSGetExecutablePath(exe, &sz) != 0 || !strstr(exe, ".app/Contents/MacOS/")) return;
+#endif
     char dir[900];
     if (!rt_data_root_early(dir, sizeof dir)) return;  // (runtime/paths.h: the data folder, wherever it was moved)
     mkdir(dir, 0755);
@@ -59,11 +72,17 @@ static int64_t sysctl_int(const char *name) {
 void plat_system_info(PlatSysInfo *si) {
     char ver[32], machine[32] = "";
     sysctl_str("kern.osproductversion", ver, sizeof ver);
+#if TARGET_OS_IPHONE
+    sysctl_str("hw.machine", machine, sizeof machine);  // ("iPhone16,1": uname gives the kernel's arch here)
+    snprintf(si->os, sizeof si->os, "iOS %s (%s)", ver[0] ? ver : "?", machine[0] ? machine : "?");
+    snprintf(si->cpu, sizeof si->cpu, "Apple %s", machine[0] ? machine : "SoC");  // (no brand string on iOS)
+#else
     struct utsname u;
     if (uname(&u) == 0) snprintf(machine, sizeof machine, "%s", u.machine);
     bool rosetta = sysctl_int("sysctl.proc_translated") == 1;
     snprintf(si->os, sizeof si->os, "macOS %s (%s%s)", ver[0] ? ver : "?", machine, rosetta ? ", Rosetta" : "");
     sysctl_str("machdep.cpu.brand_string", si->cpu, sizeof si->cpu);
+#endif
     si->cores = (int)sysctl_int("hw.physicalcpu");
     si->threads = (int)sysctl_int("hw.logicalcpu");
     int64_t p = sysctl_int("hw.perflevel0.physicalcpu"), e = sysctl_int("hw.perflevel1.physicalcpu");
@@ -71,7 +90,12 @@ void plat_system_info(PlatSysInfo *si) {
     si->ram = (uint64_t)sysctl_int("hw.memsize");
     char exe[1024];
     uint32_t sz = sizeof exe;
+#if TARGET_OS_IPHONE
+    (void)exe, (void)sz;
+    si->package = ".ipa";
+#else
     si->package = _NSGetExecutablePath(exe, &sz) == 0 && strstr(exe, ".app/Contents/MacOS/") ? ".app" : NULL;
+#endif
 }
 
 void plat_init(void) {
@@ -79,6 +103,27 @@ void plat_init(void) {
     raise_open_file_limit();
 }
 
+#if TARGET_OS_IPHONE
+// iOS (no mach_vm.h in its SDK): mmap, the window as a hint - taken only when all of it is free, never over a mapping
+// already there. iOS can't start the process again for a fresh layout: on failure the fatal message says why - most
+// often the address space is too small, i.e. the build lacks the extended virtual addressing entitlement.
+bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
+    void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    if (p == (void *)(uintptr_t)lo) return true;
+    char why[200];
+    snprintf(why, sizeof why, "mmap %llx-%llx gave %p, errno %d (extended virtual addressing entitlement missing?)",
+             (unsigned long long)lo, (unsigned long long)hi, p, errno);
+    setenv("LARECOMP_REEXEC_WHY", why, 1);
+    if (p != MAP_FAILED) munmap(p, hi - lo);
+    return false;
+}
+
+// Fresh zero pages over the whole window (ours: MAP_FIXED replaces it, releasing the old pages at once).
+bool plat_reset_guest(uint64_t lo, uint64_t hi) {
+    void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    return p == (void *)(uintptr_t)lo;
+}
+#else
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
     // Untouched pages cost nothing.
@@ -91,6 +136,7 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     mach_vm_address_t a = lo;
     return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) == KERN_SUCCESS;
 }
+#endif
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
@@ -166,9 +212,14 @@ bool plat_exe_path(char *buf, size_t size) {
 }
 
 void plat_exec(char *const argv[]) {
+#if TARGET_OS_IPHONE
+    (void)argv;  // (an app can't replace itself: the caller reports the failure, as when execv fails)
+    errno = ENOTSUP;
+#else
     if (argv) { execv(argv[0], argv); return; }
     char path[4096];
     if (plat_exe_path(path, sizeof path)) execv(path, *_NSGetArgv());
+#endif
 }
 
 const char *plat_symbol(uint64_t pc, uint64_t *offset) {
@@ -187,6 +238,28 @@ bool plat_module_name(uint64_t pc, char *out, size_t n) {
 
 // Fatal error: what happened in plain words (runtime/crash_explain.c) - an alert when running as the app (the
 // terminal shows the log otherwise). CFUserNotification: safe from any thread, no run loop needed.
+#if TARGET_OS_IPHONE
+// iOS: UIKit alerts only from the main thread (SDL's message box waits for the user there). From another thread the
+// explanation goes to last_error.txt in the data folder (Files > LAS Recomp) besides the log.
+static void ios_alert(const char *text, bool fatal) {
+    if (pthread_main_np()) {
+        SDL_ShowSimpleMessageBox(fatal ? SDL_MESSAGEBOX_ERROR : SDL_MESSAGEBOX_WARNING, "LAS Recomp", text, NULL);
+        return;
+    }
+    char dir[900], path[1000];
+    if (!rt_data_root_early(dir, sizeof dir)) return;
+    snprintf(path, sizeof path, "%s/last_error.txt", dir);
+    FILE *f = fopen(path, "w");
+    if (f) { fputs(text, f); fputc('\n', f); fclose(f); }
+}
+void plat_fatal_notice(void) {
+    char text[1600];
+    rt_crash_explain(text, sizeof text, g_log_path);
+    fflush(stderr);
+    ios_alert(text, true);
+}
+void plat_notice(const char *text) { ios_alert(text, false); }
+#else
 void plat_fatal_notice(void) {
     char text[1600];
     rt_crash_explain(text, sizeof text, g_log_path);
@@ -213,6 +286,7 @@ void plat_notice(const char *text) {
     if (copy && !pthread_create(&t, NULL, notice_thread, copy)) pthread_detach(t);
     else free(copy);
 }
+#endif
 
 void plat_print_backtrace(void) {
     void *bt[64];
@@ -255,6 +329,10 @@ void plat_crash_handler_install(void) {
 extern char **environ;
 
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {
+#if TARGET_OS_IPHONE
+    (void)argv, (void)log_path, (void)append_log;
+    return 0;  // (no child processes on iOS: the game code is built into the app, the seed generator isn't there)
+#endif
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_addopen(&fa, 1, log_path ? log_path : "/dev/null",

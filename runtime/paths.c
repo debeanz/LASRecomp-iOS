@@ -1,5 +1,8 @@
 // Data root and shipped resources (runtime/paths.h).
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
@@ -133,6 +136,11 @@ static void default_home(char *root, size_t n) {
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
     if (xdg && *xdg == '/') snprintf(root, n, "%s/lasrecomp", xdg);
     else snprintf(root, n, "%s/.local/share/lasrecomp", home && *home ? home : "/tmp");
+#elif TARGET_OS_IPHONE
+    // iOS: the app's Documents folder (HOME is the app's container), shown in Files > On My iPhone > LAS Recomp
+    // (UIFileSharingEnabled / LSSupportsOpeningDocumentsInPlace in Info.plist): game files go into extracted/ there
+    const char *home = getenv("HOME");
+    snprintf(root, n, "%s/Documents", home && *home ? home : "/tmp");
 #else
     const char *home = getenv("HOME");
     snprintf(root, n, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
@@ -465,6 +473,9 @@ const char *rt_data_root_fixed(void) {
     const char *env = getenv("LARECOMP_DATA_ROOT");
     if (env && *env) return "Set by LARECOMP_DATA_ROOT.";
     if (g_dev) return "A source checkout uses its own folder.";
+#if TARGET_OS_IPHONE
+    return "On iPhone the data folder is the app's own: Files > On My iPhone > LAS Recomp.";
+#endif
     return NULL;
 }
 

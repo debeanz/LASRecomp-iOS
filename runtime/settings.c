@@ -43,6 +43,12 @@ Settings g_settings = {
     .upscaler_auto = true,
     .res_auto = true,
     .livesplit_host = "localhost:16834",
+    .phone_frame_rate = PHONE_FPS_60,
+    .phone_ui_size = 1,
+    .touch_controls = true,
+    .touch_opacity = 65,
+    .touch_size = 100,
+    .phone_vibration = true,
 #ifndef __APPLE__
     .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)
 #endif
@@ -225,9 +231,28 @@ void settings_load(void) {
         else if (!strcmp(key, "enemy_colours")) {
             for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) if (!strcmp(val, k_enemy_colour_keys[i])) g_settings.enemy_colours = i;
         }
+        else if (!strcmp(key, "phone_resolution")) g_settings.phone_resolution = atoi(val);
+        else if (!strcmp(key, "phone_aspect")) g_settings.phone_aspect = atoi(val);
+        else if (!strcmp(key, "phone_scaling")) g_settings.phone_scaling = atoi(val) ? PHONE_SCALE_STRETCH : PHONE_SCALE_FIT;
+        else if (!strcmp(key, "phone_frame_rate")) g_settings.phone_frame_rate = atoi(val);
+        else if (!strcmp(key, "phone_ui_size")) g_settings.phone_ui_size = atoi(val);
+        else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
+        else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = atoi(val);
+        else if (!strcmp(key, "touch_size")) g_settings.touch_size = atoi(val);
+        else if (!strcmp(key, "touch_floating_stick")) g_settings.touch_floating = atoi(val) != 0;
+        else if (!strcmp(key, "phone_vibration")) g_settings.phone_vibration = atoi(val) != 0;
         else bind_settings_load(key, val);  // bind_pad_* / bind_key_*: runtime/hle/bindings.c
     }
     fclose(f);
+    // (phone rows: back in range, on the rows' steps)
+    if (g_settings.phone_resolution < 0 || g_settings.phone_resolution >= N_PHONE_RES) g_settings.phone_resolution = 0;
+    if (g_settings.phone_aspect < 0 || g_settings.phone_aspect >= N_PHONE_ASPECTS) g_settings.phone_aspect = 0;
+    if (g_settings.phone_frame_rate < PHONE_FPS_30 || g_settings.phone_frame_rate > PHONE_FPS_120) g_settings.phone_frame_rate = PHONE_FPS_60;
+    if (g_settings.phone_ui_size < 0 || g_settings.phone_ui_size > 2) g_settings.phone_ui_size = 1;
+    if (g_settings.touch_opacity < 20 || g_settings.touch_opacity > 100) g_settings.touch_opacity = 65;
+    g_settings.touch_opacity -= g_settings.touch_opacity % 5;
+    if (g_settings.touch_size < 70 || g_settings.touch_size > 150) g_settings.touch_size = 100;
+    g_settings.touch_size -= g_settings.touch_size % 10;
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (!aspect_key) g_settings.aspect_asked = true;  // (likewise: the aspect ratio was chosen already)
     if (g_settings.volume < 0) g_settings.volume = 0;
@@ -293,6 +318,12 @@ void settings_save(void) {
     }
     fprintf(f, "enemy_colours = %s\n", k_enemy_colour_keys[g_settings.enemy_colours]);
     fprintf(f, "screen_filter = %s\n", k_screen_filter_keys[g_settings.screen_filter]);
+    fprintf(f, "phone_resolution = %d\nphone_aspect = %d\nphone_scaling = %d\nphone_frame_rate = %d\nphone_ui_size = %d\n",
+            g_settings.phone_resolution, g_settings.phone_aspect, g_settings.phone_scaling, g_settings.phone_frame_rate,
+            g_settings.phone_ui_size);
+    fprintf(f, "touch_controls = %d\ntouch_opacity = %d\ntouch_size = %d\ntouch_floating_stick = %d\nphone_vibration = %d\n",
+            g_settings.touch_controls, g_settings.touch_opacity, g_settings.touch_size, g_settings.touch_floating,
+            g_settings.phone_vibration);
     bind_settings_save(f);
     fprintf(f, "rando_seed = %s\n", g_settings.rando_seed);
     if (g_settings.rando_options[0]) fprintf(f, "rando_options = %s\n", g_settings.rando_options);

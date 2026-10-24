@@ -6,7 +6,10 @@
 
 #include "rt.h"
 
-#define GA_ADDR(name, value) .name = UINT64_C(value),
+// The tables hold addresses of the 0x70_0000_0000 layout: moved to this build's guest origin (rt.h GUEST_SHIFT). Values
+// under it are sizes / limits (MAIN_CODE_SIZE), kept as they are; tools/game_addresses.py does the same.
+#define GA_REBASE(v) ((v) >= GUEST_ORIGIN_DEFAULT ? (v) + GUEST_SHIFT : (v))
+#define GA_ADDR(name, value) .name = GA_REBASE(UINT64_C(value)),
 static const GameAddrs ga_v1_0_0 = {
 #include "game_addresses/patches_v1_0_0.h"
 #include "game_addresses/runtime_v1_0_0.h"

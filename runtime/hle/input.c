@@ -18,6 +18,7 @@
 #include "../rumble.h"
 #include "../led.h"
 #include "../ui/menu.h"
+#include "../ui/touch.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -83,8 +84,10 @@ void input_rumble_poll(void) {
     // Renew SDL's 250 ms effect every 100 ms while frames are progressing.
     // A stalled render/UI thread therefore cannot leave an infinite effect.
     // This watchdog is a host policy, not a duration supplied by the game.
-    bool suppress = (now > last_frame && now - last_frame > 250) || !pad || host_test || !g_settings.rumble || menu_is_open() ||
-                    !SDL_GetKeyboardFocus();
+    // (no controller on a phone: the game's rumble as haptic taps of the phone itself, runtime/ui/touch.mm)
+    bool phone = !pad && touch_rumble_wanted();
+    bool suppress = (now > last_frame && now - last_frame > 250) || (!pad && !phone) || host_test || !g_settings.rumble ||
+                    menu_is_open() || !SDL_GetKeyboardFocus();
     SDL_LockSpinlock(&rumble_lock);
     if (suppress) memset(rumble_values, 0, sizeof rumble_values);
     else if (rumble_allowed) {
@@ -101,6 +104,7 @@ void input_rumble_poll(void) {
         }
         rumble_last_ms = now;
     }
+    if (phone) touch_rumble(lo, hi);
     rumble_last_lo = lo; rumble_last_hi = hi;
 }
 void input_rumble_stop(void) {  // UI thread: also called before normal app exit
@@ -191,9 +195,15 @@ static void recompute_keyboard(void) {
     key_ry = (held_key(g_bind_key[BIND_RS_UP]) - held_key(g_bind_key[BIND_RS_DOWN])) * 32767;
 }
 
+// The on-screen controller (runtime/ui/touch.mm): host buttons (SDL gamepad buttons by position, PADB_*TRIGGER) and
+// sticks, like a connected controller's - through the same bindings
+static _Atomic uint32_t touch_pad;
+static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+static _Atomic bool touch_on;  // the overlay is showing (button prompts: Xbox, as its labels)
+
 // Controller buttons (and the triggers as buttons) -> Switch buttons through g_bind_pad; the sticks stay the sticks.
 static void recompute_pad(void) {
-    uint32_t host = test_pad;
+    uint32_t host = test_pad | touch_pad;
     if (pad && !host_test) {
         for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
             if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)i)) host |= 1u << i;
@@ -204,6 +214,7 @@ static void recompute_pad(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
     pad_buttons = b;
+    if (!pad && !host_test && touch_on) { pad_lx = touch_lx, pad_ly = touch_ly, pad_rx = touch_rx, pad_ry = touch_ry; return; }
     if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
     pad_lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
     pad_ly = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
@@ -229,6 +240,27 @@ static void note_press(uint64_t down, uint64_t up) {
         uint64_t u = atomic_fetch_and(&press_unseen, ~up) & up;
         if (u) tap_buttons |= u;
     }
+}
+
+static void note_family_touch(bool on);
+// UI thread (runtime/ui/touch.mm, every change): the on-screen controller's state. host: SDL gamepad buttons by
+// position (bit = SDL_GamepadButton) and PADB_LTRIGGER / PADB_RTRIGGER; sticks in SDL units, y up. on: the overlay is
+// showing - while no controller is connected its sticks are the sticks and the prompts are Xbox's.
+void input_touch_set(bool on, uint32_t host, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    uint32_t was = touch_pad;
+    if (was == host && touch_on == on && touch_lx == lx && touch_ly == ly && touch_rx == rx && touch_ry == ry) return;
+    if (touch_on != on) note_family_touch(on);
+    touch_on = on;
+    uint64_t down = 0, up = 0;  // (every tap reaches the game, however short: note_press)
+    for (int i = 0; i < PADB_HOST_COUNT; i++) {
+        uint32_t m = 1u << i;
+        if ((host & m) && !(was & m)) down |= pad_bits(i);
+        if (!(host & m) && (was & m)) up |= pad_bits(i);
+    }
+    touch_pad = host;
+    touch_lx = lx, touch_ly = ly, touch_rx = rx, touch_ry = ry;
+    note_press(down, up);
+    recompute_pad();
 }
 
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
@@ -350,10 +382,12 @@ int input_family_of_type(int type) {
 }
 static _Atomic int pad_family;
 static void note_family(void) {
-    int f = pad ? input_family_of_type(SDL_GetGamepadType(pad)) : 0;
+    // (no controller, the on-screen one showing: its Xbox labels)
+    int f = pad ? input_family_of_type(SDL_GetGamepadType(pad)) : touch_on ? 1 : 0;
     if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo");
     pad_family = f;
 }
+static void note_family_touch(bool on) { touch_on = on; note_family(); }
 int input_pad_family(void) {
     static int env = -2;
     if (env == -2) {

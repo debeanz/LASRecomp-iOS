@@ -430,7 +430,66 @@ void output_scale_log(unsigned long long frame, double dw, double dh, const OutS
     psx = o->sx, psy = o->sy, pdw = dw, pdh = dh;
 }
 
+// iPhone (the Phone tab, runtime/ui/touch.mm), instead of the Video tab's resolution modes:
+//   Aspect ratio   the game image's shape: the panel's own (iPhone Default), 1.943:1, 16:9 or 4:3. The camera widens
+//                  to it where the game allows (reshape_allowed: houses and dungeons keep their 16:9 framing).
+//   Screen scaling Fit: the largest image of that shape, black bars around it; Stretch: drawn over the whole panel.
+//   Resolution     the render height: the image's own on the panel (Native) or 1084 / 1080 / 900 / 720 lines, never
+//                  more than the panel shows (scaled up to the panel with the Video tab's upscaler).
+#if PHONE_DISPLAY
+static const double PHONE_ASPECT[N_PHONE_ASPECTS] = {0, 2106.0 / 1084.0, 16.0 / 9.0, 4.0 / 3.0};
+static const double PHONE_LINES[N_PHONE_RES] = {0, 1084, 1080, 900, 720};
+
+static void phone_output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    static int p_res = -1, p_aspect, p_scaling;  // (a change of load: the pacer starts over, as for the Video tab)
+    if (p_res >= 0 && (p_res != g_settings.phone_resolution || p_aspect != g_settings.phone_aspect ||
+                       p_scaling != g_settings.phone_scaling)) {
+        extern void pace_settings_changed(const char *what);
+        pace_settings_changed("resolution");
+    }
+    p_res = g_settings.phone_resolution, p_aspect = g_settings.phone_aspect, p_scaling = g_settings.phone_scaling;
+    int ai = g_settings.phone_aspect >= 0 && g_settings.phone_aspect < N_PHONE_ASPECTS ? g_settings.phone_aspect : 0;
+    double a = ai ? PHONE_ASPECT[ai] : dw / dh;
+    bool stretch = g_settings.phone_scaling == PHONE_SCALE_STRETCH;
+    // the box the image is drawn in: Fit, the largest a-shaped box in the panel; Stretch, all of it
+    double bw = dw, bh = dh;
+    if (!stretch) {
+        if (dw / dh > a) bw = dh * a;
+        else bh = dw / a;
+    }
+    double shape = a / (16.0 / 9.0);
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005;
+    if (!reshape) shape = 1.0;
+    // the image within the box: the whole box when reshaped (or stretched), else a 16:9 one fitted in it
+    double vw = bw, vh = bh;
+    if (!reshape && !stretch) {
+        double f = fmin(bw / 1920.0, bh / 1080.0);
+        vw = 1920.0 * f, vh = 1080.0 * f;
+    }
+    int ri = g_settings.phone_resolution >= 0 && g_settings.phone_resolution < N_PHONE_RES ? g_settings.phone_resolution : 0;
+    double lines = ri ? fmin(PHONE_LINES[ri], vh) : vh;  // (never above what the panel shows of it)
+    double h = fmax(lines / 1080.0, 0.1);
+    double ax = h * shape, ay = h;
+    double cap = fmin(MAX_TEX / (1920.0 * ax), MAX_TEX / (1080.0 * ay));
+    if (cap < 1.0) { ax *= cap; ay *= cap; }
+    o->ax = o->sx = ax;
+    o->ay = o->sy = ay;
+    o->shape = shape;
+    o->vw = vw, o->vh = vh;
+    o->vx = (dw - vw) / 2, o->vy = (dh - vh) / 2;
+}
+#endif
+
 void output_scale(double dw, double dh, bool reshape_allowed, double now, double game_ms, double win_ms, OutScale *o) {
+#if PHONE_DISPLAY
+    static int test_override = -1;  // (the test overrides below still work; looked up once, not every frame)
+    if (test_override < 0) test_override = getenv("LARECOMP_SCALE") || getenv("LARECOMP_WIDE_TEST");
+    if (!test_override) {
+        (void)now, (void)game_ms, (void)win_ms;
+        phone_output_scale(dw, dh, reshape_allowed, o);
+        return;
+    }
+#endif
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
     if (forced < 0) forced = getenv("LARECOMP_SCALE") ? atof(getenv("LARECOMP_SCALE")) : 0;

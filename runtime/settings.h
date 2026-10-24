@@ -84,7 +84,32 @@ typedef struct {
     char livesplit_host[64];  // host:port of the LiveSplit Server ("localhost:16834")
     char rando_seed[128];  // active randomizer seed (rando/<name>/), empty = vanilla
     char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
+    // phone (Phone tab on iPhone, runtime/ui/touch.mm; larecomp.ini phone_*). Show FPS is show_fps above.
+    int phone_resolution;  // PHONE_RES_*: the render height, Native = the panel's own
+    int phone_aspect;      // PHONE_ASPECT_*: the shape of the game image (pixels stay square)
+    int phone_scaling;     // PHONE_SCALE_FIT (bars) / PHONE_SCALE_STRETCH (the whole panel)
+    int phone_frame_rate;  // PHONE_FPS_30 / _60 / _120
+    int phone_ui_size;     // 0 Small, 1 Default, 2 Large: the menus and overlays
+    bool touch_controls;   // the on-screen controller (hidden anyway while a controller is connected)
+    int touch_opacity;     // percent, 20..100
+    int touch_size;        // percent, 70..150
+    bool touch_floating;   // the left stick appears where the thumb lands (else fixed)
+    bool phone_vibration;  // haptic taps on the touch controls, and the game's rumble on the phone without a controller
 } Settings;
+
+enum { PHONE_RES_NATIVE = 0, PHONE_RES_1084, PHONE_RES_1080, PHONE_RES_900, PHONE_RES_720, N_PHONE_RES };
+enum { PHONE_ASPECT_DEVICE = 0, PHONE_ASPECT_1943, PHONE_ASPECT_16_9, PHONE_ASPECT_4_3, N_PHONE_ASPECTS };
+enum { PHONE_SCALE_FIT = 0, PHONE_SCALE_STRETCH = 1 };
+enum { PHONE_FPS_30 = 0, PHONE_FPS_60 = 1, PHONE_FPS_120 = 2 };
+// The phone display model is in effect (an iPhone / iPad build): output_scale and the pacer follow the Phone tab.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define PHONE_DISPLAY 1
+#else
+#define PHONE_DISPLAY 0
+#endif
 
 
 enum { N_ENEMY_COLOUR_MODES = 3, N_SCREEN_FILTERS = 4 };

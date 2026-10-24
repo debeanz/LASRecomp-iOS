@@ -11,6 +11,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 #endif
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
@@ -1268,6 +1271,7 @@ static void data_folder_popup(float s) {
 }
 
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+static bool g_recheck;        // iPhone: the setup page's "Check game files" (copied in with the Files app)
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
@@ -1544,6 +1548,17 @@ extern "C" void launcher_run(const char *root) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         // the seed PLAY would start, kept current (Settings > Gameplay greys out what that seed forces)
         snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+        if (g_recheck) {  // (iPhone: "Check game files" - copied in with the Files app)
+            g_recheck = false;
+            game_files_changed();
+            status = check_game_files(g_root);
+            fprintf(stderr, "[launcher] game files checked: %s\n", status.empty() ? "ready" : status.c_str());
+            if (status.empty()) {
+                if (!g_bg) load_background(dev);
+                page = MAIN;
+                start_background_prep();
+            }
+        }
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
             status = check_game_files(g_root);
@@ -1909,7 +1924,25 @@ extern "C" void launcher_run(const char *root) {
                     if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
                 };
                 opt_begin("##files", sc);
+#if TARGET_OS_IPHONE
+                // iPhone: no folder picker and nothing to compile (the game code is built into the app): the game files
+                // are copied into the app's folder with the Files app (or Finder / the Apple Devices app's File
+                // Sharing from a computer), then checked here
                 if (!ready) {
+                    opt_section("Your copy of the game");
+                    std::string ios_d = "Copy your extracted exefs and romfs folders into Files > On My iPhone > "
+                                        "LAS Recomp > extracted (from a computer: Finder or the Apple Devices app, File "
+                                        "Sharing, LAS Recomp). Then tap here.\n\n" + status +
+                                        (status_hint(status) ? std::string("\n") + status_hint(status) : "");
+                    if (opt_action("Check game files", "Files app", ios_d.c_str(), true)) {
+                        mkdir((g_root).c_str(), 0755);  // (the folder appears in Files once it exists)
+                        g_recheck = true;
+                    }
+                    first_row();
+                } else if (false) {
+#else
+                if (!ready) {
+#endif
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))

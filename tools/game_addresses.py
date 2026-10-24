@@ -8,6 +8,7 @@ alongside them.
 ADDRESS is empty until a version is selected (select_version / select_build_id): the patch tables in patches.py are
 built from it on import, so select first. An unknown build ID is an error: there is no fallback table.
 """
+import os
 from pathlib import Path
 import re
 import sys
@@ -18,6 +19,17 @@ class UnknownGameVersion(Exception):
     pass
 
 
+# The tables hold addresses of the 0x70_0000_0000 layout. LASRECOMP_GUEST_ORIGIN (runtime/rt.h GUEST_ORIGIN, e.g.
+# 0x800000000 for iOS) moves them to another guest origin; values under the default origin are sizes / limits
+# (MAIN_CODE_SIZE) and stay. The generator's module bases (gen.py <base>) must be the same origin's.
+GUEST_ORIGIN_DEFAULT = 0x7000000000
+GUEST_ORIGIN = int(os.environ.get('LASRECOMP_GUEST_ORIGIN') or '0', 0) or GUEST_ORIGIN_DEFAULT
+
+
+def rebase(value):
+    return value - GUEST_ORIGIN_DEFAULT + GUEST_ORIGIN if value >= GUEST_ORIGIN_DEFAULT else value
+
+
 def load_table(path):
     values = {}
     for line in Path(path).read_text(encoding='utf-8').splitlines():
@@ -26,7 +38,7 @@ def load_table(path):
         match = re.fullmatch(r'GA_ADDR\(([A-Z][A-Z0-9_]*),\s+(0x[0-9a-f]+)\)', line)
         if not match or match[1] in values:
             raise ValueError(f'Invalid or duplicate game-address definition: {line}')
-        values[match[1]] = int(match[2], 16)
+        values[match[1]] = rebase(int(match[2], 16))
     if not values:
         raise ValueError('Empty game-address table')
     return values

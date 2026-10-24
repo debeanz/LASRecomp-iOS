@@ -21,7 +21,8 @@ from analyze import eh_frame_functions
 from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_RELATIVE
 
-SCRATCH_MEM = 0x7300000000
+from game_addresses import GUEST_ORIGIN
+SCRATCH_MEM = GUEST_ORIGIN + 0x300000000  # (in the guest window of the origin the code is generated for)
 
 
 def sext26(w):

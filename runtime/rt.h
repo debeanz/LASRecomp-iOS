@@ -7,6 +7,9 @@
 
 #include "cpu.h"
 #include "platform.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>  // (TARGET_OS_IPHONE: the guest origin below)
+#endif
 
 // One write per line: stderr is unbuffered (main.c / platform: crash logs aren't lost), and Windows' CRT then wrote a
 // formatted line as dozens of separate WriteFile calls - the 2-second stats line cost ~40 ms, a hitch every 2 s.
@@ -28,19 +31,34 @@ static inline void __attribute__((format(printf, 1, 2))) rt_log(const char *fmt,
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
-#define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
-#define MAIN_BASE    0x7000000000ull
-#define SDK_BASE     0x7004000000ull
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+// iOS: an app's address space ends far below that (about 64 GB with the extended virtual addressing entitlement), so
+// the same window sits at GUEST_ORIGIN 0x8_0000_0000 there (32 GB, above the shared cache). The game is
+// position-independent (its modules are loaded and relocated at MAIN_BASE / SDK_BASE), so only the origin moves: the
+// address tables (game_addresses/*.h) keep the addresses of the 0x70_0000_0000 layout and are shifted by GUEST_SHIFT
+// where they are read (runtime/game_addresses.c, tools/game_addresses.py with LASRECOMP_GUEST_ORIGIN), and the game
+// code must be generated for the same origin (`make gen GUEST_ORIGIN=...`).
+#define GUEST_ORIGIN_DEFAULT 0x7000000000ull
+#ifndef GUEST_ORIGIN
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define GUEST_ORIGIN 0x0800000000ull
+#else
+#define GUEST_ORIGIN GUEST_ORIGIN_DEFAULT
+#endif
+#endif
+#define GUEST_SHIFT  ((uint64_t)(GUEST_ORIGIN - GUEST_ORIGIN_DEFAULT))  // (added modulo 2^64: negative on iOS)
+#define GUEST_LO     (GUEST_ORIGIN + 0x0000000000ull)
+#define GUEST_HI     (GUEST_ORIGIN + 0x0320000000ull)
+#define MAIN_BASE    (GUEST_ORIGIN + 0x0000000000ull)
+#define SDK_BASE     (GUEST_ORIGIN + 0x0004000000ull)
+#define HLE_BASE     (GUEST_ORIGIN + 0x0080000000ull)   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
-#define TLS_BASE     0x7090000000ull
+#define TLS_BASE     (GUEST_ORIGIN + 0x0090000000ull)
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
+#define HLE_HEAP     (GUEST_ORIGIN + 0x0092000000ull)   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
-#define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
+#define ALIAS_BASE   (GUEST_ORIGIN + 0x0100000000ull)   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
-#define HEAP_BASE    0x7240000000ull
+#define HEAP_BASE    (GUEST_ORIGIN + 0x0240000000ull)
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
 
 // ---- loader.c

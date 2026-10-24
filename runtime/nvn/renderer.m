@@ -1179,7 +1179,7 @@ static bool dyn_copy(uint64_t addr, uint64_t size) {
     return true;
 }
 static void bind_guest(id<MTLRenderCommandEncoder> e, bool vertex_stage, uint64_t addr, uint64_t size, int index) {
-    if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + HEAP_MAX && (addr & 3) == 0) {
+    if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + g_guest_buffer_len && (addr & 3) == 0) {
         bind_note(0, addr, size);  // (LARECOMP_LOG_BINDS: the race detector still reports the rewrites; copied, they are harmless)
         snap_note_vertex_bind(addr, size);
         if (!dyn_copy(addr, size)) {
@@ -1567,7 +1567,7 @@ static void compile_program(Prog *pr) {
 static bool translate_program(Prog *pr, const uint8_t *vcode, size_t vmax, const uint8_t *fcode, size_t fmax,
                               ShaderKey *vkey, ShaderKey *fkey, uint64_t vaddr, uint64_t faddr) {
     maxwell_gmem_base = HEAP_BASE;
-    maxwell_gmem_size = HEAP_MAX;
+    maxwell_gmem_size = g_guest_buffer_len;
     pr->vi = slow_translate(vcode, vmax, STAGE_VERTEX, vkey);
     if (!pr->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", pr->vi->error, vaddr);
@@ -2175,8 +2175,8 @@ static bool snap_on(void) {
         on = (!e || atoi(e) != 0) && overlap_on();
         if (on) {
             extern uint64_t kernel_heap_size(void);
-            snap_ring_base = HEAP_BASE + HEAP_MAX - SNAP_RING;
-            if (kernel_heap_size() > HEAP_MAX - SNAP_RING) { on = 0; LOG("[metal] storage snapshots off: the game's heap fills the range\n"); }
+            snap_ring_base = HEAP_BASE + g_guest_buffer_len - SNAP_RING;
+            if (kernel_heap_size() > g_guest_buffer_len - SNAP_RING) { on = 0; LOG("[metal] storage snapshots off: the game's heap fills the range\n"); }
             else LOG("[metal] storage buffers the CPU rewrites: copies at %llx (%u MB ring)\n", (unsigned long long)snap_ring_base, SNAP_RING >> 20);
         }
     }
@@ -2562,7 +2562,7 @@ static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3]) {
 
 static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max) {
     maxwell_gmem_base = HEAP_BASE;
-    maxwell_gmem_size = HEAP_MAX;
+    maxwell_gmem_size = g_guest_buffer_len;
     ShaderKey k = {0};
     cp->si = slow_translate(code, max, STAGE_COMPUTE, &k);
     if (!cp->si->msl) { LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, cp->code_addr); cp->failed = true; return false; }
@@ -2774,7 +2774,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         for (int i = 0; i < 16; i++) {
             Range r = st.sbuf[5][i];
             before[i][0] = r.addr ? range_hash(r.addr, r.size) : 0;
-            before[i][1] = r.addr && r.addr + r.size + 0x10000 <= HEAP_BASE + HEAP_MAX ? range_hash(r.addr + r.size, 0x10000) : 0;
+            before[i][1] = r.addr && r.addr + r.size + 0x10000 <= HEAP_BASE + g_guest_buffer_len ? range_hash(r.addr + r.size, 0x10000) : 0;
             if (r.addr) bind_note(3, r.addr, r.size);
         }
     }
@@ -2798,7 +2798,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
                 int pf = nvn_pool_flags_at(r.addr);
                 if (range_hash(r.addr, r.size) != before[i][0]) { written |= 1u << i; seen[k].flags_w |= pf > 0 ? pf : 0x80000000; }
                 else seen[k].flags_in |= pf > 0 ? pf : 0x80000000;
-                if (r.addr + r.size + 0x10000 <= HEAP_BASE + HEAP_MAX && range_hash(r.addr + r.size, 0x10000) != before[i][1]) after |= 1u << i;
+                if (r.addr + r.size + 0x10000 <= HEAP_BASE + g_guest_buffer_len && range_hash(r.addr + r.size, 0x10000) != before[i][1]) after |= 1u << i;
             }
             if (written != seen[k].written || after != seen[k].after || read != seen[k].read) {
                 seen[k].written = written; seen[k].after = after; seen[k].read = read;
@@ -3357,7 +3357,7 @@ static void draw(CmdRec *r, bool indexed) {
                     if (n > 2048) n = 2048;
                     const uint64_t *w = (const uint64_t *)(uintptr_t)r.addr;
                     for (uint64_t i = 0; i < n; i++)
-                        if (w[i] >= HEAP_BASE && w[i] + 4096 <= HEAP_BASE + HEAP_MAX && !(w[i] & 15)) bind_note(4, w[i], 4096);
+                        if (w[i] >= HEAP_BASE && w[i] + 4096 <= HEAP_BASE + g_guest_buffer_len && !(w[i] & 15)) bind_note(4, w[i], 4096);
                 }
             }
         }
@@ -3603,7 +3603,7 @@ static void draw(CmdRec *r, bool indexed) {
             uint32_t isz = itype == 1 ? 2 : 4;
             id<MTLBuffer> ib;
             uint64_t ioff;
-            bool in_heap = iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0;
+            bool in_heap = iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + g_guest_buffer_len && (iaddr % isz) == 0;
             if (in_heap) { bind_note(1, iaddr, (uint64_t)count * isz); snap_note_vertex_bind(iaddr, (uint64_t)count * isz); }
             if (in_heap && !dyn_copy(iaddr, (uint64_t)count * isz)) {
                 ib = g_guest_buffer; ioff = iaddr - HEAP_BASE;
@@ -3700,6 +3700,22 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     bool array = tex.textureType == MTLTextureType2DArray || tex.textureType == MTLTextureTypeCube;
     uint32_t hb = ((uint32_t)rg[4] + fi->bh - 1) / fi->bh, wb = ((uint32_t)rg[3] + fi->bw - 1) / fi->bw;
     uint64_t mtl_bpb = renderer_pixel_format_bytes(tex.pixelFormat, fi->bpb);
+    if (renderer_bc_decoded(t->format)) {  // (metal.m: a BC texture this GPU holds decoded - the blocks become texels)
+        for (int z = 0; z < rg[5]; z++) {
+            size_t drow;
+            uint8_t *data = renderer_bc_decode(t->format, (const uint8_t *)(uintptr_t)(src + (uint64_t)z * img), wb, hb, 1,
+                                               row, &drow);
+            if (!data) break;
+            id<MTLBuffer> staging = [dev newBufferWithBytes:data length:drow * hb * 4 options:MTLResourceStorageModeShared];
+            free(data);
+            [b copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:drow sourceBytesPerImage:drow * hb * 4
+                   sourceSize:MTLSizeMake(rg[3], rg[4], 1) toTexture:tex
+             destinationSlice:array ? rg[2] + z : 0 destinationLevel:level
+            destinationOrigin:MTLOriginMake(rg[0], rg[1], array ? 0 : rg[2] + z)];
+        }
+        [b endEncoding];
+        return;
+    }
     for (int z = 0; z < (array ? rg[5] : 1); z++) {
         const uint8_t *s = (const uint8_t *)(uintptr_t)(src + (uint64_t)z * img);
         uint64_t out_row = (uint64_t)wb * mtl_bpb;
@@ -3805,7 +3821,10 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         tex = small;
     }
     id<MTLBlitCommandEncoder> b = [cb() blitCommandEncoder];
-    if (renderer_pixel_format_bytes(tex.pixelFormat, fi->bpb) != fi->bpb) { [b endEncoding]; return; }
+    if (renderer_pixel_format_bytes(tex.pixelFormat, fi->bpb) != fi->bpb || renderer_bc_decoded(t->format)) {
+        [b endEncoding];  // (a BC texture held decoded has no blocks to copy back)
+        return;
+    }
     bool array = tex.textureType == MTLTextureType2DArray || tex.textureType == MTLTextureTypeCube;
     for (int z = 0; z < (array ? rg[5] : 1); z++)
         [b copyFromTexture:tex sourceSlice:array ? rg[2] + z : 0 sourceLevel:level
@@ -3891,7 +3910,11 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         static id<MTLSamplerState> dnear;
         if (!dnear) dnear = [dev newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
         id<MTLTexture> sdepth = s;
+#if TARGET_OS_IPHONE  // (no 24-bit depth on iPhone GPUs)
+        if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
+#else
         if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
+#endif
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
         float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
         [e setRenderPipelineState:pipe];

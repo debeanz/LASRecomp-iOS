@@ -15,6 +15,7 @@
 #include "imgui.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
+#include "touch.h"
 #include "osk.h"
 #include "pad_nav.h"
 #ifdef __APPLE__
@@ -63,6 +64,7 @@ struct QEvent {
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
+static std::atomic<float> g_wheel_px{170};  // pixels per mouse wheel step at the menu's scale (render thread sets it)
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -75,6 +77,12 @@ static void set_open(bool open);
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
+}
+// Main thread (runtime/ui/touch.mm: the touch controls' gear): the menu, on that tab
+extern "C" void menu_open_tab(int id) {
+    extern int g_tab_request_ext;
+    g_tab_request_ext = id;
+    set_open(true);
 }
 
 void menu_tabs_focus(bool first_tab);
@@ -153,6 +161,34 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
+    // Touch screens (SDL's mouse copy of a finger): ImGui has no touch scrolling, so a finger that moves more than a
+    // little scrolls the page under it (wheel steps) instead of moving the pointer, and lifts off the screen's edge so
+    // the row it started on isn't also clicked. A tap stays a click.
+    static bool t_down, t_drag;
+    static float t_y0;
+    if (capturing()) {
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.which == SDL_TOUCH_MOUSEID) t_down = true, t_drag = false, t_y0 = e->button.y;
+        else if (e->type == SDL_EVENT_MOUSE_MOTION && e->motion.which == SDL_TOUCH_MOUSEID && t_down) {
+            if (!t_drag && fabsf(e->motion.y - t_y0) > 12) t_drag = true;  // (points)
+            if (t_drag) {
+                QEvent q = {};
+                q.kind = QEvent::WHEEL, q.y = e->motion.yrel * g_pixel_density / g_wheel_px.load();
+                push(q);
+                return true;
+            }
+        } else if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.which == SDL_TOUCH_MOUSEID) {
+            t_down = false;
+            if (t_drag) {
+                t_drag = false;
+                QEvent q = {};
+                q.kind = QEvent::MOUSE_POS, q.x = q.y = -100000;
+                push(q);
+                q.kind = QEvent::MOUSE_BUTTON, q.button = 0, q.down = false;
+                push(q);
+                return true;
+            }
+        }
+    }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
@@ -248,6 +284,9 @@ void menu_apply_window_requests(void *win) {
     g_pixel_density = SDL_GetWindowPixelDensity(w);
     static bool text_input;
     bool want_text = capturing();
+#if PHONE_DISPLAY  // (text input brings up the iPhone's keyboard over the menu: only while a field is being typed in)
+    want_text = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
+#endif
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -387,6 +426,9 @@ extern "C" double output_scale_dynamic_factor(void);
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
+#if PHONE_DISPLAY  // (the Phone tab: the phone's display and touch rows instead of the window's, runtime/ui/touch.mm)
+    phone_rows_draw();
+#else
     opt_section("Display");
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
@@ -398,8 +440,10 @@ static void tab_display(void) {
         g_want_fullscreen_apply.store(true);
     }
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+#endif
 
     opt_section("Rendering");
+#if !PHONE_DISPLAY  // (the phone's Resolution row above takes its place)
     // display order -> RES_* (the ini / enum order predates the menu order)
     // (up to 4x: 7680 x 4320, 8K - more only ran out of GPU memory, and sat next to 75% in the list)
     // (Match display in the middle: left from it 75% / 50% / 25%, right Dynamic then 1x-4x; user 2026-10-11)
@@ -425,6 +469,7 @@ static void tab_display(void) {
         if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
+#endif
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {"Bilinear", "MetalFX"};
@@ -437,7 +482,7 @@ static void tab_display(void) {
 #endif
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
         char udm[512];
-        if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
+        if (!PHONE_DISPLAY && g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
             snprintf(udm, sizeof udm, "%s\n\nNot used at Match display: the game already renders at your display's resolution.", ud);
             ud = udm;
             opt_disable_next();
@@ -718,8 +763,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    static const char *names[] = {"Video", "Audio", "Save Editor", "Randomizer", "Warp", "Cheats", "Gameplay",
-                                  "Cosmetics", "Controls", "Quit"};
+    static const char *names[] = {PHONE_DISPLAY ? "Phone" : "Video", "Audio", "Save Editor", "Randomizer", "Warp",
+                                  "Cheats", "Gameplay", "Cosmetics", "Controls", "Quit"};
     static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
@@ -893,7 +938,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool kbd = g_kbd.load() == 1;
     bool race = race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
     bool flyin = pickup_flyin_wanted() && !open;  // (a silent pickup's card)
-    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
+    bool touch = !open && !kbd && touch_overlay_wanted();  // (the on-screen controller: runtime/ui/touch.mm)
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin) && !touch) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
         return;
@@ -918,7 +964,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         fps_note(now, io.DeltaTime);
         char rk[64];
         // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
-        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
+        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && !touch && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
@@ -948,10 +994,12 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         else { memcpy(g_ov_key, key, sizeof key); g_ov_same = key[0] ? 1 : 0; }
     }
     drain_events(io);
-    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
-    float scale = (float)(th / 1080.0);
+    // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window (on a phone: larger, for fingers and
+    // a small screen, times the Phone tab's UI Size)
+    float scale = (float)(th / 1080.0) * phone_ui_scale();
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
+    g_wheel_px = 5 * 34 * scale;  // (touch drags scroll: menu_handle_event)
 
 #ifdef __APPLE__
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -992,6 +1040,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (inv) {
         inventory_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }
+    if (touch) touch_overlay_draw(io.DisplaySize);
 
     if (open) {
         // dim the game behind the menu

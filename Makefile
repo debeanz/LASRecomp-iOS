@@ -27,6 +27,19 @@ endif
 GENSIMD  := --simd $(if $(filter aarch64,$(ARCH)),asm,c)
 endif
 
+# iPhone / iPad: `make PLATFORM=ios` on a Mac with Xcode (tools/ios/README.md): the game code generated for the iOS
+# guest origin into generated-ios/ (`make gen PLATFORM=ios`), everything in build/ios, the game code linked into the
+# app (an app may only run what it was signed with), deps from `make deps-ios`.
+GUEST_ORIGIN ?= 0x7000000000
+ifeq ($(PLATFORM),ios)
+GEN      := generated-ios
+B        := build/ios
+# (runtime/rt.h: the iOS address space ends far below 0x70_0000_0000)
+GUEST_ORIGIN := 0x800000000
+endif
+# (iOS shares the macOS host layer)
+PLATFORM_SRC := $(if $(filter ios,$(PLATFORM)),macos,$(PLATFORM))
+
 # B: build dir. MACOS_MIN: oldest macOS to run on (default: this one). DEPS: prefix with SDL3 / FFmpeg instead of
 # Homebrew's (make deps). `make app` sets all three (build/mac15, 15.0, build/deps); plain `make` uses none.
 B         ?= build
@@ -45,7 +58,7 @@ GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibi
 GEN_SRC  := $(strip $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c))
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c runtime/*.cpp) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
-            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
+            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(strip $(PLATFORM_SRC)).c
 RT_HDRS  := $(wildcard runtime/*.h runtime/game_addresses/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
@@ -53,7 +66,29 @@ UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
 IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
              $(B)/imgui/imgui_impl_sdl3.o
 
-ifeq ($(PLATFORM),macos)
+ifeq ($(PLATFORM),ios)
+IOS_MIN  ?= 16.4
+DEPS     := $(or $(DEPS),$(CURDIR)/build/deps-ios)
+CC       := xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=$(IOS_MIN)
+CXX      := xcrun -sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=$(IOS_MIN)
+EXE      := $(B)/lasrecomp
+DEPINC   := -I$(DEPS)/include
+# (runtime/gamelib.c: the game code is linked in, never loaded)
+OSFLAGS  := -DGAMELIB_STATIC
+LDFLAGS  := -L$(DEPS)/lib -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+            -framework CoreFoundation -framework Foundation -framework UIKit -framework Metal -framework MetalFX \
+            -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers \
+            -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreHaptics \
+            -framework CoreMotion -framework GameController -framework CoreBluetooth -framework CoreVideo \
+            -framework CoreMedia
+BACKEND_SRC := $(wildcard runtime/nvn/*.m)
+BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
+UIFLAGS  := -fobjc-arc $(OSFLAGS)
+# (no game code library: IOS_GAMELIB, linked into the app)
+GAMELIB  :=
+IOS_GAMELIB := $(if $(GEN_SRC),$(B)/lasgame.a)
+else ifeq ($(PLATFORM),macos)
 SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
 EXE      := $(B)/lasrecomp
@@ -191,6 +226,14 @@ $(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
 
+# iOS: the game code as a static archive, linked into the app itself (after its own objects in $^)
+ifeq ($(PLATFORM),ios)
+$(EXE): $(IOS_GAMELIB)
+$(B)/lasgame.a: $(GEN_OBJ)
+	@mkdir -p $(dir $@)
+	rm -f $@ && xcrun libtool -static -o $@ $^
+endif
+
 # its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
@@ -216,9 +259,11 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 # Python: tools/venv (macOS, Linux: bin/python, Windows: Scripts/python.exe)
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
+# (the modules at the guest origin, runtime/rt.h MAIN_BASE / SDK_BASE; the address tables moved to it as well)
+SDK_ORIGIN = $(shell printf '0x%x' $$(( $(GUEST_ORIGIN) + 0x4000000 )))
 gen:
-	cd tools && ../$(PY) gen.py sdk ../extracted/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
-	cd tools && ../$(PY) gen.py main ../extracted/exefs/main 0x7000000000 ../$(GEN)/main $(GENSIMD)
+	cd tools && LASRECOMP_GUEST_ORIGIN=$(GUEST_ORIGIN) ../$(PY) gen.py sdk ../extracted/exefs/sdk $(SDK_ORIGIN) ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
+	cd tools && LASRECOMP_GUEST_ORIGIN=$(GUEST_ORIGIN) ../$(PY) gen.py main ../extracted/exefs/main $(GUEST_ORIGIN) ../$(GEN)/main $(GENSIMD)
 
 gen-objs: $(GEN_OBJ)
 
@@ -242,6 +287,17 @@ app:
 	@[ -f build/deps/lib/libSDL3.0.dylib ] || { echo "make deps first"; exit 1; }
 	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/lasrecomp
 	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/lasrecomp
+
+# iPhone / iPad (tools/ios/README.md): `make deps-ios` once, `make gen PLATFORM=ios` from your own game files, then
+# `make ipa` -> build/ios/LASRecomp-<version>-ios.ipa (ad-hoc signed with its entitlements, for sideloading). It holds
+# game code built from your files: keep it to yourself.
+deps-ios:
+	tools/ios/build_deps_ios.sh
+ipa:
+	@[ -f build/deps-ios/lib/libSDL3.a ] || { echo "make deps-ios first"; exit 1; }
+	@[ -n "$(wildcard generated-ios/main/*.c)" ] || { echo "make gen PLATFORM=ios first (from your own game files)"; exit 1; }
+	$(MAKE) PLATFORM=ios build/ios/lasrecomp
+	tools/ios/bundle_ios.sh build/ios/lasrecomp "$(VERSION)"
 
 # macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/LAS Recomp-<v>-macOS.dmg
 dmg: app
@@ -343,7 +399,7 @@ appimages:
 smoketest:
 	tools/linux/smoketest.sh
 
-.PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist rando-helper appimage appimages smoketest
+.PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows deps-ios ipa app dist rando-helper appimage appimages smoketest
 
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c

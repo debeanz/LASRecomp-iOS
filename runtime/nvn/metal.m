@@ -4,7 +4,13 @@
 #include "ui/menu.h"
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
 #include <sys/stat.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#else
 #import <AppKit/AppKit.h>
+#endif
+#include "../ui/touch.h"
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
 #include "output_scale.h"
@@ -14,6 +20,7 @@
 #include <stdatomic.h>
 
 #include "nvn.h"
+#include "bcdec.h"
 #include "rqueue.h"
 #include "../game_addresses.h"
 #include "renderer.h"
@@ -31,11 +38,85 @@ static id<MTLRenderPipelineState> present_pipe;
 static id<MTLSamplerState> present_sampler;
 id<MTLBuffer> g_guest_buffer;  // wraps the guest heap so GPU addresses map to buffer offsets
 uint64_t g_guest_buffer_base;
+uint64_t g_guest_buffer_len = HEAP_MAX;  // (renderer.h)
+
+// The heap's wrapped length: HEAP_MAX, or the device's buffer limit when lower, in whole 16 KB pages (a no-copy
+// buffer's length must be). LARECOMP_HEAP_BUFFER_MB (test): less, to try an iPhone's limit on a Mac.
+static uint64_t guest_buffer_length(void) {
+    uint64_t n = HEAP_MAX, lim = (uint64_t)dev.maxBufferLength;
+    if (lim && lim < n) n = lim;
+    const char *e = getenv("LARECOMP_HEAP_BUFFER_MB");
+    if (e && atoll(e) > 0 && (uint64_t)atoll(e) << 20 < n) n = (uint64_t)atoll(e) << 20;
+    return n & ~0x3FFFull;
+}
 
 // ================================================================== formats
 typedef struct { MTLPixelFormat pf; uint8_t expand_rgb; uint8_t force_alpha_one; } MtlFormat;
 
+// BC (DXT / RGTC / BPTC) textures on GPUs that can't sample them (iPhones before Apple's M-series chips: the A-series
+// has ASTC only): decoded to plain texels when uploaded (runtime/nvn/bcdec.c), the Metal texture allocated in the
+// decoded format. LARECOMP_BC_DECODE=1 (test): decode on any GPU, e.g. a Mac, to compare.
+static BcKind bc_kind(uint32_t f) {
+    switch (f) {
+    case 0x41: case 0x42: case 0x45: case 0x46: return BCDEC_BC1;
+    case 0x43: case 0x47: return BCDEC_BC2;
+    case 0x44: case 0x48: return BCDEC_BC3;
+    case 0x49: return BCDEC_BC4U;
+    case 0x4A: return BCDEC_BC4S;
+    case 0x4B: return BCDEC_BC5U;
+    case 0x4C: return getenv("LARECOMP_BC5_UNORM") ? BCDEC_BC5U : BCDEC_BC5S;  // (as mtl_format_native)
+    case 0x4D: case 0x4E: return BCDEC_BC7;
+    case 0x4F: return BCDEC_BC6S;
+    case 0x50: return BCDEC_BC6U;
+    default: return BCDEC_NONE;
+    }
+}
+static bool bc_native(void) {
+    static int native = -1;
+    if (native >= 0) return native;
+    if (!dev) return false;  // (asked before the device exists: decided once it does)
+    bool n = true;
+    if (getenv("LARECOMP_BC_DECODE") && atoi(getenv("LARECOMP_BC_DECODE"))) n = false;
+#if TARGET_OS_IPHONE
+    else if (@available(iOS 16.4, *)) n = dev.supportsBCTextureCompression;
+    else n = false;
+#endif
+    native = n;
+    LOG("[metal] BC textures: %s\n", n ? "native" : "decoded on upload (the GPU can't sample them)");
+    return n;
+}
+// The nvn format's BC kind when this GPU needs it decoded, else BCDEC_NONE
+static BcKind bc_decoded(uint32_t f) {
+    BcKind k = bc_kind(f);
+    return k && !bc_native() ? k : BCDEC_NONE;
+}
+bool renderer_bc_decoded(uint32_t f) { return bc_decoded(f) != BCDEC_NONE; }
+// (renderer.m's buffer -> texture copies) blocks to texels for a decoded BC format: NULL when the format isn't one;
+// out_row: the texels' row pitch. The caller frees it.
+uint8_t *renderer_bc_decode(uint32_t f, const uint8_t *src, uint32_t wb, uint32_t hb, uint32_t d, size_t src_row,
+                            size_t *out_row) {
+    BcKind k = bc_decoded(f);
+    if (!k) return NULL;
+    *out_row = (size_t)wb * 4 * bcdec_texel_bytes(k);
+    return bcdec_image(k, src, wb, hb, d, src_row);
+}
+
+static MtlFormat mtl_format_native(uint32_t f);
 static MtlFormat mtl_format(uint32_t f) {
+    BcKind k = bc_decoded(f);
+    if (!k) return mtl_format_native(f);
+    bool srgb = (f >= 0x45 && f <= 0x48) || f == 0x4E;
+    switch (k) {
+    case BCDEC_BC4U: return (MtlFormat){MTLPixelFormatR8Unorm};
+    case BCDEC_BC4S: return (MtlFormat){MTLPixelFormatR8Snorm};
+    case BCDEC_BC5U: return (MtlFormat){MTLPixelFormatRG8Unorm};
+    case BCDEC_BC5S: return (MtlFormat){MTLPixelFormatRG8Snorm};
+    case BCDEC_BC6U: case BCDEC_BC6S: return (MtlFormat){MTLPixelFormatRGBA16Float};
+    default: return (MtlFormat){srgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm};
+    }
+}
+
+static MtlFormat mtl_format_native(uint32_t f) {
     switch (f) {
     case 0x01: return (MtlFormat){MTLPixelFormatR8Unorm};
     case 0x02: return (MtlFormat){MTLPixelFormatR8Snorm};
@@ -625,7 +706,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
                 free(lin);
                 lin = data;
             }
-            uint64_t out_sz = (uint64_t)out_row * l.hb * l.d;
+            uint32_t out_rows = l.hb;  // the staging rows per slice: block rows, or texel rows once decoded
+            size_t dec_row;
+            uint8_t *dec = renderer_bc_decode(t->format, lin, l.wb, l.hb, l.d, row, &dec_row);
+            if (dec) { free(lin); lin = data = dec; out_row = (uint32_t)dec_row; out_rows = l.hb * 4; }
+            uint64_t out_sz = (uint64_t)out_row * out_rows * l.d;
             id<MTLBuffer> staging = [dev newBufferWithBytes:data length:out_sz options:MTLResourceStorageModeShared];
             free(lin);
             // the copy stays inside the texture's level: one allocated at the internal resolution (16:9, render
@@ -635,7 +720,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
             MTLSize size = MTLSizeMake(MIN((NSUInteger)l.w, lw), MIN((NSUInteger)l.h, lh), MIN((NSUInteger)l.d, ld));
             NSUInteger slice = layer;
             [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:out_row
-                 sourceBytesPerImage:(NSUInteger)out_row * l.hb sourceSize:size toTexture:b->tex
+                 sourceBytesPerImage:(NSUInteger)out_row * out_rows sourceSize:size toTexture:b->tex
                     destinationSlice:slice destinationLevel:lv destinationOrigin:MTLOriginMake(0, 0, 0)];
         }
     }
@@ -830,9 +915,12 @@ void backend_init(void) {
     MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
     sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
     present_sampler = [dev newSamplerStateWithDescriptor:sd];
-    // Wrap the guest heap: memory pools live there, and GPU addresses are guest addresses.
+    // Wrap the guest heap: memory pools live there, and GPU addresses are guest addresses. As much of it as one buffer
+    // may hold (all of it on a Mac; iPhones allow less): the game's heap fills it from HEAP_BASE up, and data past the
+    // end goes to the GPU through the copy ring instead (renderer.m bind_guest).
     g_guest_buffer_base = HEAP_BASE;
-    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:HEAP_MAX
+    g_guest_buffer_len = guest_buffer_length();
+    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:g_guest_buffer_len
                                            options:MTLResourceStorageModeShared deallocator:nil];
     if (!g_guest_buffer) FATAL("cannot wrap guest heap in a Metal buffer (max %llu)\n", (uint64_t)dev.maxBufferLength);
     renderer_init(dev);
@@ -842,7 +930,8 @@ void backend_init(void) {
         LOG("[aspect] constant %f -> %f\n", *k, (float)atof(getenv("LARECOMP_ASPECT_TEST")));
         *k = (float)atof(getenv("LARECOMP_ASPECT_TEST"));
     }
-    LOG("[metal] %s, heap buffer %llu MB\n", dev.name.UTF8String, (uint64_t)HEAP_MAX >> 20);
+    LOG("[metal] %s, heap buffer %llu MB (device limit %llu MB)\n", dev.name.UTF8String, g_guest_buffer_len >> 20,
+        (unsigned long long)dev.maxBufferLength >> 20);
 }
 
 id<MTLCommandQueue> renderer_queue(void) { return queue; }
@@ -868,7 +957,7 @@ void backend_reset(void) {
 
 void backend_guest_memory_reset(void) {
     if (!queue) return;
-    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:HEAP_MAX
+    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:g_guest_buffer_len
                                            options:MTLResourceStorageModeShared deallocator:nil];
     if (!g_guest_buffer) FATAL("cannot wrap guest heap in a Metal buffer\n");
 }
@@ -1440,7 +1529,12 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             if (n++ < 20) LOG("[metal] present of frame %llu without an image (texture %p backend %p)\n", (unsigned long long)frame, t, b);
         }
         [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { (void)done; __atomic_sub_fetch(&g_presents_inflight, 1, __ATOMIC_RELAXED); }];
-        if (deadline) [cb presentDrawable:drawable atTime:CACurrentMediaTime() + 1.0 / 60.0];
+        double ahead = 1.0 / 60.0;
+#if PHONE_DISPLAY  // Phone tab, Frame Rate 120 (ProMotion, Info.plist CADisableMinimumFrameDurationOnPhone): each frame
+                   // shows at the panel's next 120 Hz refresh - the game still makes at most 60, shown sooner
+        if (g_settings.phone_frame_rate == PHONE_FPS_120) ahead = 1.0 / 120.0;
+#endif
+        if (deadline) [cb presentDrawable:drawable atTime:CACurrentMediaTime() + ahead];
         else [cb presentDrawable:drawable];
         [cb commit];
         if (shot_tex) {
@@ -1562,6 +1656,14 @@ void ui_window_init(void) {
     // macOS reading them in the background makes the system ask for Input Monitoring ("receive keystrokes from any
     // application"), so it isn't the default
     input_apply_background();
+#if TARGET_OS_IPHONE
+    // iPhone: landscape only (the touch controls are laid out for it), no home indicator over the game (a first swipe
+    // from the bottom edge shows it, the second goes home), and fingers stay fingers for the touch controls - SDL still
+    // turns them into mouse clicks for the menus (ImGui)
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;
@@ -1583,8 +1685,11 @@ void ui_window_init(void) {
     // The display's vsync stays on: without it frames show as soon as they're done, which tears (seen on a 5120x1440
     // display), for ~2-3 fps near the limit at most (the game paces itself to vi.c's emulated 60 Hz vsync, and the two
     // clocks drift). LARECOMP_DISPLAY_SYNC=0: off (tests).
+#if !TARGET_OS_IPHONE  // (iOS always presents in step with the display)
     layer.displaySyncEnabled = !getenv("LARECOMP_DISPLAY_SYNC") || atoi(getenv("LARECOMP_DISPLAY_SYNC")) != 0;
+#endif
     layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;
+    touch_init();  // (runtime/ui/touch.mm: the on-screen controller - iPhone, or LARECOMP_TOUCH=1)
 }
 
 SDL_Window *ui_window(void) { return window; }
@@ -1609,11 +1714,16 @@ void backend_quit(void) {
 int ui_run(void) {
     // The emulated vsync/timer threads need precise sleeps; App Nap timer coalescing
     // otherwise stretches 16ms sleeps to ~100ms whenever the window isn't frontmost.
+#if TARGET_OS_IPHONE
+    // (no App Nap on iOS; the screen must not dim and lock during play with only the touch controls in use)
+    dispatch_async(dispatch_get_main_queue(), ^{ [UIApplication sharedApplication].idleTimerDisabled = YES; });
+#else
     static id activity;
     if (!activity)
         activity = [[NSProcessInfo processInfo]
             beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
                               reason:@"Game emulation"];
+#endif
     ui_window_init();
     atomic_store(&ui_ready, true);
     for (;;) {
@@ -1624,9 +1734,11 @@ int ui_run(void) {
             if (e.type == SDL_EVENT_QUIT) { input_rumble_stop(); input_led_stop(); LOG("window closed\n"); backend_quit(); exit(0); }
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing
             input_cursor_event(&e);
+            if (touch_handle_event(&e)) continue;  // fingers on the on-screen controller (runtime/ui/touch.mm)
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }
+        touch_frame();  // (held d-pad repeats, the overlay hiding when a controller connects)
         menu_apply_window_requests(window);
         input_rumble_poll();
         input_led_poll();

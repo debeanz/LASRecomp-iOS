@@ -1,0 +1,117 @@
+# iPhone / iPad build (tools/ios/README.md).
+#
+# This repository is public; the game is not. Nothing from the game - its files, the C generated from them, objects,
+# logs of compiling them, the app built with them - ever goes into this repository, its caches, its artifacts or its
+# public logs:
+#   compile-check  every push: the runtime for iOS without any game code (and the BC decoder against the GPU's own).
+#   ipa            run by hand: your exefs comes from your PRIVATE repository (repository variable LAS_PRIVATE_REPO,
+#                  secret LAS_PRIVATE_TOKEN with read/write access to its contents), the game code is generated and
+#                  compiled with its output kept off the public log, and the IPA goes back to that private repository
+#                  as a release asset ("ipa"). Only SDL3 / FFmpeg are cached.
+name: iOS
+
+on:
+  push:
+    branches: [ios-port]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: Build the IPA from your game files (private repository)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  compile-check:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+      - name: Cache iOS libraries (SDL3, FFmpeg)
+        uses: actions/cache@v4
+        with:
+          path: build/deps-ios
+          key: deps-ios-${{ hashFiles('tools/ios/build_deps_ios.sh') }}
+      - name: Build iOS libraries
+        run: tools/ios/build_deps_ios.sh
+      - name: Compile the runtime for iOS (no game code)
+        run: make PLATFORM=ios -k -j"$(sysctl -n hw.ncpu)" runtime-objs
+      - name: BC decoder against the GPU's own decoding
+        run: |
+          xcrun clang -O1 -fobjc-arc -framework Metal -framework Foundation -Iruntime/nvn \
+              -o build/test_bcdec tools/ios/test_bcdec.m runtime/nvn/bcdec.c
+          build/test_bcdec
+
+  ipa:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_ipa
+    needs: compile-check
+    runs-on: macos-15
+    timeout-minutes: 240
+    env:
+      PRIVATE_REPO: ${{ vars.LAS_PRIVATE_REPO }}
+      GH_TOKEN: ${{ secrets.LAS_PRIVATE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the private repository settings
+        run: |
+          [ -n "$PRIVATE_REPO" ] || { echo "::error::Set the repository variable LAS_PRIVATE_REPO (owner/name of your private repository)"; exit 1; }
+          [ -n "$GH_TOKEN" ] || { echo "::error::Set the secret LAS_PRIVATE_TOKEN"; exit 1; }
+          vis=$(gh api "repos/$PRIVATE_REPO" --jq .visibility)
+          [ "$vis" = private ] || { echo "::error::$PRIVATE_REPO must be private (it is $vis)"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Tools
+        run: |
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          python -m venv tools/venv
+          tools/venv/bin/pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5
+      - name: Cache iOS libraries (SDL3, FFmpeg)
+        uses: actions/cache@v4
+        with:
+          path: build/deps-ios
+          key: deps-ios-${{ hashFiles('tools/ios/build_deps_ios.sh') }}
+      - name: Build iOS libraries
+        run: tools/ios/build_deps_ios.sh
+      - name: Your game files (private)
+        run: |
+          mkdir -p extracted
+          gh release download game-files -R "$PRIVATE_REPO" -p exefs.zip -D "$RUNNER_TEMP" --clobber
+          unzip -q "$RUNNER_TEMP/exefs.zip" -d extracted && rm -f "$RUNNER_TEMP/exefs.zip"
+          [ -f extracted/exefs/main ] || { echo "::error::exefs.zip must hold an exefs/ folder with main in it"; exit 1; }
+      - name: Generate and compile the game code (output kept private)
+        run: |
+          log="$RUNNER_TEMP/game-code.log"
+          ok=1
+          { make PLATFORM=ios gen && make PLATFORM=ios -j"$(sysctl -n hw.ncpu)" build/ios/lasgame.a; } >"$log" 2>&1 || ok=0
+          echo "game code: $(grep -c '' "$log") log lines"
+          if [ $ok = 0 ]; then
+            gh release view logs -R "$PRIVATE_REPO" >/dev/null 2>&1 ||
+              gh release create logs -R "$PRIVATE_REPO" --title "Build logs" --notes "Private build logs (game code)"
+            gh release upload logs "$log" -R "$PRIVATE_REPO" --clobber
+            echo "::error::Generating / compiling the game code failed: the log is in $PRIVATE_REPO, release 'logs'"
+            exit 1
+          fi
+      - name: Link and bundle the app
+        run: |
+          make PLATFORM=ios -j"$(sysctl -n hw.ncpu)" build/ios/lasrecomp 2>&1 | grep -v '^xcrun.*generated-ios' || true
+          [ -f build/ios/lasrecomp ] || { echo "::error::link failed"; exit 1; }
+          IOS_BUILD_NUMBER=${{ github.run_number }} tools/ios/bundle_ios.sh build/ios/lasrecomp "$(sed -n 's/^#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)"
+      - name: Upload the IPA (private)
+        run: |
+          gh release view ipa -R "$PRIVATE_REPO" >/dev/null 2>&1 ||
+            gh release create ipa -R "$PRIVATE_REPO" --title "LAS Recomp for iPhone" --notes "Built from your own game files. Keep it private."
+          gh release upload ipa build/ios/*.ipa -R "$PRIVATE_REPO" --clobber
+          echo "IPA uploaded to $PRIVATE_REPO, release 'ipa'"
+      - name: Remove the game from the runner
+        if: always()
+        run: rm -rf extracted generated-ios build/ios

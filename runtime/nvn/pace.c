@@ -8,6 +8,7 @@
 
 #include "../game_addresses.h"
 #include "../rt.h"
+#include "../settings.h"
 #include "pace.h"
 #include "slowframe.h"
 
@@ -192,6 +193,12 @@ static uint64_t pace_scene(void) {
 
 void pace_frame(void) {
     spike_test();
+#if PHONE_DISPLAY
+    // Phone tab, Frame Rate 30: the game's own 30 fps mode all the time (battery, heat), not only while frames don't
+    // fit 60. (60 and 120 pace as below: the game itself never runs past 60 - 120 is the panel's refresh for the
+    // touch controls and menus, runtime/nvn/metal.m.)
+    if (g_settings.phone_frame_rate == PHONE_FPS_30) { hold_cadence(hold_30(true)); return; }
+#endif
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
