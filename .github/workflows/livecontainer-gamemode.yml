@@ -1,0 +1,49 @@
+# LiveContainer with Game Mode: apps inside LiveContainer run under LiveContainer's own Info.plist, so iOS's Game Mode
+# (iOS 18+: background work held back while a game is in front) turns on for them only when LiveContainer itself says
+# it's a game. This downloads LiveContainer's official release IPAs (both variants: LiveContainer.ipa and
+# LiveContainer+SideStore.ipa), adds the two Info.plist keys and uploads the results as this run's artifact. No game
+# data is involved. Install the one matching your LiveContainer through SideStore as an update (same bundle ID: the
+# apps inside stay); SideStore signs it again with your Apple ID.
+name: LiveContainer with Game Mode
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: LiveContainer release tag (e.g. 3.8.0, nightly; empty = the latest stable)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download LiveContainer
+        run: |
+          mkdir -p in out
+          gh release download ${{ inputs.release }} -R LiveContainer/LiveContainer -p '*.ipa' -D in
+          ls -la in
+      - name: Add the Game Mode keys
+        run: |
+          for ipa in in/*.ipa; do
+            name=$(basename "$ipa" .ipa)
+            rm -rf w && mkdir w && (cd w && unzip -q "../$ipa")
+            plist=$(ls -d w/Payload/*.app)/Info.plist
+            plutil -replace LSApplicationCategoryType -string public.app-category.games "$plist"
+            plutil -replace GCSupportsGameMode -bool YES "$plist"
+            echo "$name: $(plutil -extract CFBundleIdentifier raw "$plist") $(plutil -extract CFBundleShortVersionString raw "$plist")," \
+                 "category $(plutil -extract LSApplicationCategoryType raw "$plist"), Game Mode $(plutil -extract GCSupportsGameMode raw "$plist")"
+            (cd w && zip -qry "../out/$name-GameMode.ipa" Payload)
+          done
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer-GameMode-${{ inputs.release || 'latest' }}
+          path: out/*.ipa
+          retention-days: 30

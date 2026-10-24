@@ -105,6 +105,12 @@
 	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Game Mode (iOS 18+): a game, so iOS holds back background work while it's in front. (Inside LiveContainer it's
+	     LiveContainer's own Info.plist that counts: tools/ios/README.md, .github/workflows/livecontainer-gamemode.yml) -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
+	<key>GCSupportsGameMode</key>
+	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Bluetooth is used for game controllers.</string>
 </dict>
