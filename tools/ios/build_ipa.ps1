@@ -93,8 +93,9 @@ if ($LASTEXITCODE -ne 0) { Fail "could not start the workflow" }
 $run = $null
 for ($i = 0; $i -lt 30 -and -not $run; $i++) {
     Start-Sleep -Seconds 4
-    $run = gh run list -R $CodeRepo --workflow ios.yml --event workflow_dispatch --limit 5 --json databaseId,createdAt |
-        ConvertFrom-Json | Where-Object { ([datetime]$_.createdAt).ToUniversalTime() -ge $before } | Select-Object -First 1
+    # (assigned first: Windows PowerShell 5.1's ConvertFrom-Json hands a JSON list down the pipeline as one object)
+    $runs = gh run list -R $CodeRepo --workflow ios.yml --event workflow_dispatch --limit 5 --json databaseId,createdAt | ConvertFrom-Json
+    $run = $runs | Where-Object { ([datetime]$_.createdAt).ToUniversalTime() -ge $before } | Select-Object -First 1
 }
 if (-not $run) { Fail "the run didn't show up: see https://github.com/$CodeRepo/actions" }
 Write-Host "https://github.com/$CodeRepo/actions/runs/$($run.databaseId) (about 30-60 minutes the first time)"
