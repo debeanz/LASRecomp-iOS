@@ -16,6 +16,8 @@
 #endif
 #include <ctype.h>
 #include <dirent.h>
+#include <float.h>
+#include <math.h>
 #include <pthread.h>
 #include <string>
 #include <sys/stat.h>
@@ -797,7 +799,13 @@ static bool menu_tip(float s) {
         ImGui::TextUnformatted("LAS Recomp has its own menu for settings, the randomizer, cosmetics and more.");
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
+#if PHONE_DISPLAY
+        ImGui::Text("Open it in game with the gear at the top of the screen (next to the touch controls' Menu button), or "
+                    "on a controller with the %s (or %s together). Its Phone tab has the touch controls and display "
+                    "settings.", home[fam], pad[fam]);
+#else
         ImGui::Text("Open it in game with F1 or Esc, or on a controller with the %s (or %s together).", home[fam], pad[fam]);
+#endif
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
@@ -1581,6 +1589,26 @@ extern "C" void launcher_run(const char *root) {
         while (SDL_PollEvent(&e)) {
             input_cursor_event(&e);  // (pad / key: the cursor hides; ImGui's backend leaves it so, below)
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
+#if PHONE_DISPLAY
+            {   // a finger that moves more than a little scrolls the page under it (ImGui has no touch scrolling) and
+                // lifts off the screen's edge, so the row it started on isn't clicked too; a tap stays a click
+                static bool t_down, t_drag;
+                static float t_y0;
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.which == SDL_TOUCH_MOUSEID) t_down = true, t_drag = false, t_y0 = e.button.y;
+                if (e.type == SDL_EVENT_MOUSE_MOTION && e.motion.which == SDL_TOUCH_MOUSEID && t_down) {
+                    if (!t_drag && fabsf(e.motion.y - t_y0) > 12) t_drag = true;  // (points)
+                    if (t_drag) {
+                        float px = 5 * ImGui::GetFontSize();
+                        io.AddMouseWheelEvent(0, e.motion.yrel * SDL_GetWindowPixelDensity(win) / (px > 1 ? px : 1));
+                        continue;
+                    }
+                }
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.which == SDL_TOUCH_MOUSEID) {
+                    t_down = false;
+                    if (t_drag) { t_drag = false; io.AddMousePosEvent(-FLT_MAX, -FLT_MAX); io.AddMouseButtonEvent(0, false); continue; }
+                }
+            }
+#endif
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
             if (e.type == SDL_EVENT_QUIT) exit(0);
         }
@@ -1755,7 +1783,8 @@ extern "C" void launcher_run(const char *root) {
                 // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
                 if (g_play_pending && status.empty()) pressed = true, g_play_pending = false;
                 if (pressed) {
-                    if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
+                    // (iPhone: the Phone tab's Aspect Ratio row instead, iPhone Default to start with)
+                    if (!g_settings.aspect_asked && !PHONE_DISPLAY) ImGui::OpenPopup("##aspect");
                     else if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
                 }

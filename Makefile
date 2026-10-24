@@ -67,7 +67,7 @@ IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.
              $(B)/imgui/imgui_impl_sdl3.o
 
 ifeq ($(PLATFORM),ios)
-IOS_MIN  ?= 16.4
+IOS_MIN  ?= 17.0
 DEPS     := $(or $(DEPS),$(CURDIR)/build/deps-ios)
 CC       := xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=$(IOS_MIN)
 CXX      := xcrun -sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=$(IOS_MIN)

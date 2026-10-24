@@ -14,7 +14,7 @@
 #include "rt.h"
 
 static const GameLibTables *g_tables;
-static char g_error[256];
+static char g_error[256] __attribute__((unused));  // (the loaded library's errors: none when it is linked in)
 
 #ifdef GAMELIB_STATIC
 // iOS: the game code is linked into the app itself (built from the player's own game files when the app was built:

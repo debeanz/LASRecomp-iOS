@@ -95,8 +95,21 @@ int main(void) {
                         }
                         if (diff > worst) worst = diff;
                         if (diff > cases[c].tol) {
-                            if (bad < 3)
-                                printf("  %s texel %d,%d ch %d: gpu %.4f, bcdec %.4f\n", cases[c].name, x, y, ch, g, m);
+                            if (bad < 6) {
+                                // the block, and for BC4 / BC5 the channel's endpoints and this texel's 3-bit index
+                                const uint8_t *blk = blocks + ((size_t)(y / 4) * BW + x / 4) * bb;
+                                printf("  %s texel %d,%d ch %d: gpu %.4f (x255 %.2f, x127 %.2f), bcdec %.4f", cases[c].name,
+                                       x, y, ch, g, g * 255, g * 127, m);
+                                if (bb == 8 || cases[c].k == BCDEC_BC5U || cases[c].k == BCDEC_BC5S) {
+                                    const uint8_t *cb = blk + (bb == 16 ? ch * 8 : 0);
+                                    uint64_t bits = 0;
+                                    for (int i = 0; i < 6; i++) bits |= (uint64_t)cb[2 + i] << (8 * i);
+                                    int ti = (y & 3) * 4 + (x & 3);
+                                    printf(" | e0 %d (s %d) e1 %d (s %d) idx %d", cb[0], (int8_t)cb[0], cb[1], (int8_t)cb[1],
+                                           (int)(bits >> (3 * ti) & 7));
+                                }
+                                printf("\n");
+                            }
                             bad++;
                         }
                     }

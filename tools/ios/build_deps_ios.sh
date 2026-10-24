@@ -1,12 +1,12 @@
 #!/bin/bash
 # make deps-ios (macOS with Xcode): the libraries the iPhone app links, built from the same pinned sources as
-# tools/build_deps_macos.sh, as static iphoneos arm64 libraries for IOS_MIN (default 16.4) into build/deps-ios:
+# tools/build_deps_macos.sh, as static iphoneos arm64 libraries for IOS_MIN (default 17.0) into build/deps-ios:
 #   SDL3 (no OpenGL ES: the renderer is Metal); FFmpeg, LGPL only, just what the game's movies need (WebM / MP4:
 #   VP9 / VP8 / H.264 video, Vorbis / Opus / AAC audio) and swscale.
 # No keystone / Python: the seed generator doesn't run on iOS. Each step is skipped when its output exists.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-MIN=${IOS_MIN:-16.4}
+MIN=${IOS_MIN:-17.0}
 P=$PWD/build/deps-ios
 S=$PWD/build/deps-src
 mkdir -p "$S" "$P/lib" "$P/include"

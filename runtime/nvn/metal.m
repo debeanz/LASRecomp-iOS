@@ -1328,7 +1328,22 @@ void backend_represent(void) {
 // The GPU side of a present (the render thread when it's on, rqueue.c): the present pass, the overlay, shots.
 // frame: the number of this present (the game thread's frame when it was queued).
 static int g_presents_inflight;  // present command buffers committed and not yet completed (each holds a drawable)
+#if TARGET_OS_IPHONE
+// iOS: an app in the background may not use the GPU (its command buffers fail): the presenting thread waits here until
+// the app is back, and with it the game, which waits for its frames. (The system suspends the app soon anyway.)
+static atomic_bool g_in_background;
+static bool SDLCALL app_state_watch(void *ud, SDL_Event *e) {
+    (void)ud;
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) { atomic_store(&g_in_background, true); LOG("[app] background: paused\n"); }
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { atomic_store(&g_in_background, false); LOG("[app] foreground\n"); }
+    return true;
+}
+#endif
+
 void backend_present_now(NvnTexture *t, uint64_t frame) {
+#if TARGET_OS_IPHONE
+    while (atomic_load(&g_in_background) && !rq_stopping()) usleep(20000);
+#endif
     if (rq_stopping()) return;  // quitting: no drawable after the window closed (#40, as Vulkan)
     extern void renderer_submit(void);
     extern void renderer_texture_will_read(NvnTexture *t);
@@ -1665,6 +1680,9 @@ void ui_window_init(void) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
+#if TARGET_OS_IPHONE
+    SDL_AddEventWatch(app_state_watch, NULL);  // (called as it happens, not when the queue is read)
+#endif
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);

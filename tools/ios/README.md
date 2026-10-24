@@ -7,7 +7,7 @@ own** extracted game files (v1.0.0, v1.0.1 or v1.1.0), and you copy the game's d
 ## What you need
 
 - Your extracted game: the `exefs` and `romfs` folders (not `.nsp` / `.xci` packages). How to get them isn't covered.
-- An iPhone or iPad with **6 GB of memory or more** (iPhone 13 Pro / 14 / 15 / 16 and later, M-series iPads), iOS 16.4+.
+- An iPhone or iPad with **6 GB of memory or more** (iPhone 13 Pro / 14 / 15 / 16 and later, M-series iPads), iOS 17+.
 - About 7 GB free on it.
 - A way to sideload with your Apple ID that keeps the app's entitlements: SideStore or AltStore.
 - On a PC: the GitHub CLI (`gh`), signed in.
