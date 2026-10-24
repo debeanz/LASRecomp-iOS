@@ -50,6 +50,14 @@ if ($LASTEXITCODE -ne 0) {  # (missing: gh prints the 404 body on stdout, so go 
     $vis = "private"
 }
 if ($vis -ne "private") { Fail "${DataRepo} is ${vis} - it must be private (it will hold your game files)" }
+# a release needs a commit to point at: an empty repository gets a README first
+gh api "repos/$DataRepo/contents/README.md" --silent 2>$null
+if ($LASTEXITCODE -ne 0) {
+    $readme = "# LAS Recomp iOS (private)`n`nMy own game files (release game-files) and the IPAs built from them (release ipa). Keep this repository private.`n"
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($readme))
+    gh api -X PUT "repos/$DataRepo/contents/README.md" -f message="README" -f content=$b64 --silent
+    if ($LASTEXITCODE -ne 0) { Fail "could not add a README to $DataRepo" }
+}
 
 if (-not $SkipUpload) {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("las-exefs-" + [guid]::NewGuid())
