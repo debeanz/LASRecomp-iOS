@@ -12,7 +12,17 @@
 
 extern "C" {
 #include "../cosmetic_colour.h"
+#include "../settings.h"  // (PHONE_DISPLAY: rows sized for fingers)
 }
+
+// iPhone: rows made for a thumb - taller (at least Apple's 44 pt at the menu's phone scale), a wider rows pane (the
+// description beside it narrower), and a value changed by where it's tapped: its left half back, its right half on,
+// the label the next value (a mouse only clicks the arrows themselves)
+#if PHONE_DISPLAY
+static const float kRowH = 2.5f, kRowsW = 0.62f;
+#else
+static const float kRowH = 1.9f, kRowsW = 0.48f;
+#endif
 #include "option_rows.h"
 #include "osk.h"
 
@@ -73,7 +83,7 @@ void opt_begin(const char *id, float scale) {
     g_desc_hover.clear(), g_desc_focus.clear();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImGui::PushID(id);
-    ImGui::BeginChild("##rows", ImVec2(avail.x * 0.48f, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+    ImGui::BeginChild("##rows", ImVec2(avail.x * kRowsW, avail.y), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 4 * scale));  // (rows close)
     g_desc_first.clear();
     g_ids.clear();
@@ -100,7 +110,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (dup) ImGui::PushID(dup);
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFontSize() * 1.9f;
+    float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFontSize() * kRowH;
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own border shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
@@ -167,8 +177,13 @@ static int row(const char *label, const std::string &value, bool changed, const 
         dl->AddTriangleFilled(ImVec2(rx + aw, cy), ImVec2(rx, cy - aw * 0.75f), ImVec2(rx, cy + aw * 0.75f), ac);
         if (clicked && !off) {
             float mx = ImGui::GetIO().MousePos.x, hit = gap;
+#if PHONE_DISPLAY  // (a finger: the value's whole half, from the row's middle to its right edge)
+            if (mx >= p.x + w * 0.5f) step = mx < (lx + rx + aw) * 0.5f ? -1 : 1;
+#else
             if (mx >= lx - hit && mx <= lx + aw + hit) step = -1;
             else if (mx >= rx - hit && mx <= rx + aw + hit) step = 1;
+#endif
+            (void)hit;
         }
         right = rx - gap;
     }

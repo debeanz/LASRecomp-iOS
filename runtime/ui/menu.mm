@@ -65,6 +65,7 @@ static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
 static std::atomic<float> g_wheel_px{170};  // pixels per mouse wheel step at the menu's scale (render thread sets it)
+static std::atomic<float> g_safe_w_frac{1};  // the safe area's share of the window's width (main thread sets it)
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -164,15 +165,19 @@ bool menu_handle_event(const SDL_Event *e) {
     // Touch screens (SDL's mouse copy of a finger): ImGui has no touch scrolling, so a finger that moves more than a
     // little scrolls the page under it (wheel steps) instead of moving the pointer, and lifts off the screen's edge so
     // the row it started on isn't also clicked. A tap stays a click.
-    static bool t_down, t_drag;
-    static float t_y0;
+    static bool t_down, t_drag, t_side;
+    static float t_x0, t_y0;
     if (capturing()) {
-        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.which == SDL_TOUCH_MOUSEID) t_down = true, t_drag = false, t_y0 = e->button.y;
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.which == SDL_TOUCH_MOUSEID)
+            t_down = true, t_drag = false, t_x0 = e->button.x, t_y0 = e->button.y;
         else if (e->type == SDL_EVENT_MOUSE_MOTION && e->motion.which == SDL_TOUCH_MOUSEID && t_down) {
-            if (!t_drag && fabsf(e->motion.y - t_y0) > 12) t_drag = true;  // (points)
+            float dx = fabsf(e->motion.x - t_x0), dy = fabsf(e->motion.y - t_y0);
+            if (!t_drag && (dx > 12 || dy > 12)) t_drag = true, t_side = dx > dy;  // (points; sideways: the tab bar)
             if (t_drag) {
                 QEvent q = {};
-                q.kind = QEvent::WHEEL, q.y = e->motion.yrel * g_pixel_density / g_wheel_px.load();
+                q.kind = QEvent::WHEEL;
+                if (t_side) q.x = e->motion.xrel * g_pixel_density / g_wheel_px.load();
+                else q.y = e->motion.yrel * g_pixel_density / g_wheel_px.load();
                 push(q);
                 return true;
             }
@@ -282,6 +287,14 @@ extern "C" uint32_t g_window_resize_request;  // (test scripts: runtime/hle/inpu
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
+#if PHONE_DISPLAY
+    {   // (the menu stays clear of the notch / Dynamic Island: menu_render)
+        SDL_Rect sa;
+        int ww = 0, wh = 0;
+        SDL_GetWindowSize(w, &ww, &wh);
+        if (ww > 0 && SDL_GetWindowSafeArea(w, &sa) && sa.w > 0) g_safe_w_frac = (float)sa.w / (float)ww;
+    }
+#endif
     static bool text_input;
     bool want_text = capturing();
 #if PHONE_DISPLAY  // (text input brings up the iPhone's keyboard over the menu: only while a field is being typed in)
@@ -820,7 +833,11 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
     static bool nav_in_page;  // (the frame before: the cursor on a control of the page - its child windows)
     if (nav_in_page && g.NavJustMovedToId && g.NavWindow == root && !any_popup) g_focus_tab = -100, g_focus_frames = 0;
+#if PHONE_DISPLAY  // (ten tabs at a finger's size don't fit a phone: the bar scrolls - swipe it, or its arrows)
+    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+#else
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
+#endif
         for (int k = 0; k < ntabs; k++) {
             const Tab &t = tabs[k];
             ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
@@ -1046,6 +1063,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
         float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
+#if PHONE_DISPLAY  // (the width between the notch / Dynamic Island and the screen's other edge: the safe area)
+        w = io.DisplaySize.x * g_safe_w_frac.load() - 2 * 12 * scale;
+#endif
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);

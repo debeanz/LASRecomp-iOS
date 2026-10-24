@@ -542,9 +542,11 @@ void touch_overlay_draw(const ImVec2 &display) {
 // ------------------------------------------------------------------ Phone tab (render thread, the menu)
 float phone_ui_scale(void) {
 #if TOUCH_PHONE
-    static const float k[3] = {0.85f, 1.0f, 1.2f};  // Small / Default / Large on the phone's baseline
+    // Small / Default / Large on the phone's baseline: 1.5x a 1080p screen's menu - about 19 pt text and 48 pt rows on
+    // an iPhone (option_rows.mm), for fingers on a small screen
+    static const float k[3] = {0.85f, 1.0f, 1.2f};
     int i = g_settings.phone_ui_size;
-    return 1.3f * k[i >= 0 && i <= 2 ? i : 1];
+    return 1.5f * k[i >= 0 && i <= 2 ? i : 1];
 #else
     return 1.0f;
 #endif
