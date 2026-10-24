@@ -19,7 +19,9 @@ param(
     [string]$Out = "build\ios",
     [switch]$SkipUpload
 )
-$ErrorActionPreference = "Stop"
+# (Continue, with exit codes checked: in Windows PowerShell 5.1 "Stop" turns any stderr line of a program - gh's
+# expected "404" for a repository that doesn't exist yet - into a fatal error, redirected or not)
+$ErrorActionPreference = "Continue"
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "GitHub CLI (gh) not found: https://cli.github.com" }
 $me = (gh api user --jq .login)
@@ -44,6 +46,7 @@ $vis = gh api "repos/$DataRepo" --jq .visibility 2>$null
 if (-not $vis) {
     Write-Host "Creating the private repository $DataRepo"
     gh repo create $DataRepo --private --description "LAS Recomp iOS: my own game files and builds (private)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "could not create $DataRepo" }
     $vis = "private"
 }
 if ($vis -ne "private") { Fail "${DataRepo} is ${vis} - it must be private (it will hold your game files)" }
@@ -69,7 +72,9 @@ if (-not $SkipUpload) {
 # what the workflow needs to reach it
 if (-not $Token) { $Token = (gh auth token) }
 gh variable set LAS_PRIVATE_REPO -R $CodeRepo --body $DataRepo | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail "could not set the variable LAS_PRIVATE_REPO on $CodeRepo" }
 $Token | gh secret set LAS_PRIVATE_TOKEN -R $CodeRepo | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail "could not set the secret LAS_PRIVATE_TOKEN on $CodeRepo" }
 
 Write-Host "Starting the iOS build on $CodeRepo"
 $before = (Get-Date).ToUniversalTime().AddSeconds(-5)
