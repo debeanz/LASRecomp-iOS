@@ -487,14 +487,8 @@ static void tab_display(void) {
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {"Bilinear", "MetalFX"};
-#if PHONE_DISPLAY
-        const char *ud = "How the image is scaled up to the screen when it renders at a lower resolution. Bilinear: plain "
-                         "and soft, almost free (the default). MetalFX: Apple's upscaler, sharper, but it costs the iPhone "
-                         "3-4 ms of GPU time a frame - enough to drop below 60 fps outdoors.";
-#else
         const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. MetalFX: Apple's "
                          "upscaler, sharper. Bilinear: plain and soft.";
-#endif
 #else
         static const char *ups[] = {"Bilinear", "AMD FSR 1"};
         const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: "
