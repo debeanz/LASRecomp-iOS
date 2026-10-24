@@ -43,7 +43,7 @@ foreach ($f in "main", "main.npdm", "sdk") {
 
 # the private repository: created private, never used when it is public
 $vis = gh api "repos/$DataRepo" --jq .visibility 2>$null
-if (-not $vis) {
+if ($LASTEXITCODE -ne 0) {  # (missing: gh prints the 404 body on stdout, so go by its exit code)
     Write-Host "Creating the private repository $DataRepo"
     gh repo create $DataRepo --private --description "LAS Recomp iOS: my own game files and builds (private)" | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "could not create $DataRepo" }
