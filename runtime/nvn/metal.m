@@ -1804,6 +1804,13 @@ void ui_window_init(void) {
     layer = (__bridge CAMetalLayer *)SDL_Metal_GetLayer(view);
     dev = MTLCreateSystemDefaultDevice();
     settings_resolve_defaults(false);  // (Apple GPUs keep MetalFX as the default upscaler)
+#if TARGET_OS_IPHONE
+    // iPhone: bilinear by default. MetalFX took 3-4 ms of GPU every frame there just to stretch 2341x1080 to the
+    // 2796x1290 panel (A17 Pro, the overworld: 19 ms game + 4 ms window = 43 fps); bilinear is well under 1 ms. A
+    // player's own choice is kept (larecomp.ini upscaler = metalfx).
+    g_default_upscaler = UPSCALE_BILINEAR;
+    if (g_settings.upscaler_auto) g_settings.upscaler = UPSCALE_BILINEAR;
+#endif
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     // The display's vsync stays on: without it frames show as soon as they're done, which tears (seen on a 5120x1440
