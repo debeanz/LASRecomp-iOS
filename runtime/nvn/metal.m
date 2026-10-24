@@ -7,6 +7,8 @@
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
+#include <mach/mach.h>
+#include <os/proc.h>  // (os_proc_available_memory: the [phone] log lines)
 #else
 #import <AppKit/AppKit.h>
 #endif
@@ -36,6 +38,11 @@ static SDL_Window *window;
 static atomic_bool ui_ready;
 static id<MTLRenderPipelineState> present_pipe;
 static id<MTLSamplerState> present_sampler;
+#if TARGET_OS_IPHONE
+static void phone_log_start(void);    // (the [phone] log lines, below the presenting code)
+static void phone_watch_power(void);
+#endif
+
 id<MTLBuffer> g_guest_buffer;  // wraps the guest heap so GPU addresses map to buffer offsets
 uint64_t g_guest_buffer_base;
 uint64_t g_guest_buffer_len = HEAP_MAX;  // (renderer.h)
@@ -932,6 +939,10 @@ void backend_init(void) {
     }
     LOG("[metal] %s, heap buffer %llu MB (device limit %llu MB)\n", dev.name.UTF8String, g_guest_buffer_len >> 20,
         (unsigned long long)dev.maxBufferLength >> 20);
+#if TARGET_OS_IPHONE
+    static bool phone_logged;
+    if (!phone_logged) { phone_logged = true; phone_log_start(); phone_watch_power(); }
+#endif
 }
 
 id<MTLCommandQueue> renderer_queue(void) { return queue; }
@@ -1329,6 +1340,57 @@ void backend_represent(void) {
 // frame: the number of this present (the game thread's frame when it was queued).
 static int g_presents_inflight;  // present command buffers committed and not yet completed (each holds a drawable)
 #if TARGET_OS_IPHONE
+// ---- the phone's own log lines (bug reports: lasrecomp.log, or the Phone tab's Share Log)
+// [phone] every 10 s: what is drawn and how fast, the 30 fps hold, the GPU's time, the phone's heat and power mode, the
+// app's memory and what is left before iOS closes it. [phone] lines on a change of heat / Low Power Mode / a memory
+// warning too (app_state_watch).
+static OutScale g_ph_os;
+static double g_ph_dw, g_ph_dh, g_ph_game_ms = -1, g_ph_win_ms = -1, g_ph_game_sum, g_ph_win_sum;
+static int g_ph_n;
+static void phone_note_frame(const OutScale *os, double dw, double dh, double game_ms, double win_ms) {
+    g_ph_os = *os, g_ph_dw = dw, g_ph_dh = dh, g_ph_game_ms = game_ms, g_ph_win_ms = win_ms;
+    if (game_ms >= 0 && win_ms >= 0) g_ph_game_sum += game_ms, g_ph_win_sum += win_ms, g_ph_n++;
+}
+static const char *thermal_name(NSProcessInfoThermalState s) {
+    return s == NSProcessInfoThermalStateNominal ? "nominal" : s == NSProcessInfoThermalStateFair ? "fair"
+         : s == NSProcessInfoThermalStateSerious ? "SERIOUS" : "CRITICAL";
+}
+static void phone_memory(double *used_mb, double *left_mb) {
+    task_vm_info_data_t vi;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    *used_mb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS ? vi.phys_footprint / 1048576.0 : -1;
+    *left_mb = os_proc_available_memory() / 1048576.0;  // (before iOS closes the app: its memory limit minus the above)
+}
+static void phone_log_line(double now, double fps) {
+    static double last;
+    if (now - last < 10) return;
+    last = now;
+    double used, left;
+    phone_memory(&used, &left);
+    extern double output_scale_dynamic_factor(void);
+    NSProcessInfo *pi = [NSProcessInfo processInfo];
+    LOG("[phone] t=%.0f %.1f fps | screen %.0fx%.0f, render %.0fx%.0f (of %.0fx%.0f, dynamic %s %.2f) | 30 fps hold %s | "
+        "gpu game %.1f + window %.1f ms | heat %s%s | memory %.0f MB, %.0f MB left | frame rate setting %d\n",
+        now, fps, g_ph_dw, g_ph_dh, 1920 * g_ph_os.sx, 1080 * g_ph_os.sy, 1920 * g_ph_os.ax, 1080 * g_ph_os.ay,
+        g_settings.phone_dynamic ? "on" : "off", output_scale_dynamic_factor(), pace_is_slow() ? "ON" : "off",
+        g_ph_n ? g_ph_game_sum / g_ph_n : -1, g_ph_n ? g_ph_win_sum / g_ph_n : -1, thermal_name(pi.thermalState),
+        pi.lowPowerModeEnabled ? ", Low Power Mode" : "", used, left, g_settings.phone_frame_rate);
+    g_ph_game_sum = g_ph_win_sum = 0, g_ph_n = 0;
+}
+static void phone_log_start(void) {  // (once: the device's GPU and limits, and the phone settings)
+    double used, left;
+    phone_memory(&used, &left);
+    LOG("[phone] %s, %.1f GB, max buffer %llu MB, memory limit about %.0f MB (left %.0f), %s, BC textures %s\n",
+        dev.name.UTF8String, [NSProcessInfo processInfo].physicalMemory / 1073741824.0,
+        (unsigned long long)dev.maxBufferLength >> 20, used + left, left,
+        [NSProcessInfo processInfo].operatingSystemVersionString.UTF8String, bc_native() ? "native" : "decoded");
+    LOG("[phone] settings: resolution %d dynamic %d aspect %d scaling %d frame rate %d ui %d touch %d opacity %d size %d "
+        "floating %d vibration %d upscaler %d antialias %d\n", g_settings.phone_resolution, g_settings.phone_dynamic,
+        g_settings.phone_aspect, g_settings.phone_scaling, g_settings.phone_frame_rate, g_settings.phone_ui_size,
+        g_settings.touch_controls, g_settings.touch_opacity, g_settings.touch_size, g_settings.touch_floating,
+        g_settings.phone_vibration, g_settings.upscaler, g_settings.antialias);
+}
+
 // iOS: an app in the background may not use the GPU (its command buffers fail): the presenting thread waits here until
 // the app is back, and with it the game, which waits for its frames. (The system suspends the app soon anyway.)
 static atomic_bool g_in_background;
@@ -1336,7 +1398,25 @@ static bool SDLCALL app_state_watch(void *ud, SDL_Event *e) {
     (void)ud;
     if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) { atomic_store(&g_in_background, true); LOG("[app] background: paused\n"); }
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { atomic_store(&g_in_background, false); LOG("[app] foreground\n"); }
+    if (e->type == SDL_EVENT_LOW_MEMORY) {
+        double used, left;
+        phone_memory(&used, &left);
+        LOG("[phone] iOS memory warning: %.0f MB used, %.0f MB left\n", used, left);
+    }
     return true;
+}
+
+// heat and Low Power Mode, as they change (iOS slows the GPU when the phone gets warm: the frame rate follows)
+static void phone_watch_power(void) {
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        (void)n;
+        LOG("[phone] heat: %s\n", thermal_name([NSProcessInfo processInfo].thermalState));
+    }];
+    [nc addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        (void)n;
+        LOG("[phone] Low Power Mode %s\n", [NSProcessInfo processInfo].lowPowerModeEnabled ? "on" : "off");
+    }];
 }
 #endif
 
@@ -1405,6 +1485,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         widescreen_present_crop(frame, shape, crop, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
         output_scale_log((unsigned long long)frame, dw, dh, &os);  // (diagnostics: [scale] on a change)
+#if TARGET_OS_IPHONE
+        phone_note_frame(&os, dw, dh, game_ms, win_ms);  // (the [phone] line: phone_log_line)
+#endif
         extern void renderer_set_alloc_scale(float ax, float ay);
         renderer_set_alloc_scale((float)os.ax, (float)os.ay);
         renderer_set_scale((float)sx, (float)sy);
@@ -1606,6 +1689,9 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern const char *game_level_name(void);
         if (last_fps_time > 0) LOG("[metal] t=%.1f frame %llu %.1f fps max %.0fms level %s (%s)\n", now, (unsigned long long)frame,
                                    frames / (now - last_fps_time), max_gap * 1000.0, game_level_name(), renderer_stats());
+#if TARGET_OS_IPHONE
+        if (last_fps_time > 0) phone_log_line(now, frames / (now - last_fps_time));
+#endif
         {   // (diagnostics) frame rate low for two periods in a row: what's allocated (at most once a minute)
             static int slow;
             static double last_dump = -100;

@@ -86,9 +86,12 @@ typedef struct {
     char rando_options[48];  // the Randomizer tab's New seed options: a seed ID without its random part (empty = defaults)
     // phone (Phone tab on iPhone, runtime/ui/touch.mm; larecomp.ini phone_*). Show FPS is show_fps above.
     int phone_resolution;  // PHONE_RES_*: the render height, Native = the panel's own
+    bool phone_dynamic;    // Dynamic Resolution (off by default): lower than phone_resolution while the GPU can't hold 60
+                           // (output_scale.c), instead of the 30 fps hold
     int phone_aspect;      // PHONE_ASPECT_*: the shape of the game image (pixels stay square)
     int phone_scaling;     // PHONE_SCALE_FIT (bars) / PHONE_SCALE_STRETCH (the whole panel)
     int phone_frame_rate;  // PHONE_FPS_30 / _60 / _120
+    bool phone_auto30;     // Drop to 30 FPS When Slow (off by default): the pacer's hold and the game's own 30 mode (pace.c)
     int phone_ui_size;     // 0 Small, 1 Default, 2 Large: the menus and overlays
     bool touch_controls;   // the on-screen controller (hidden anyway while a controller is connected)
     int touch_opacity;     // percent, 20..100

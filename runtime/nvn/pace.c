@@ -99,6 +99,31 @@ static bool hold_30(bool on) {
     return held;
 }
 
+#if PHONE_DISPLAY
+// Phone: the game's own 30 fps mode allowed (Frame Rate 30) or not (60): its frame controller's most extra vsyncs
+// (+0x4e3, 1 normally) is 0 while not allowed - the value the game has when it has no 30 fps mode at all - and the
+// game's own value again when allowed. Re-asserted every frame (the controller is rebuilt by a boot).
+static void game_30_mode(bool allowed) {
+    static uint64_t fw_seen;
+    static uint8_t saved;
+    static bool cleared;
+    uint64_t fw = *(volatile uint64_t *)(uintptr_t)GA(GAME_MGR);
+    if (fw != fw_seen) fw_seen = fw, cleared = false;  // (another boot: another controller)
+    if (!fw) return;
+    volatile uint8_t *max = (volatile uint8_t *)(uintptr_t)(fw + FW_MIN_EXTRA_VSYNCS + 1);
+    if (!allowed) {
+        if (!cleared) {
+            saved = *max, cleared = true;
+            LOG("[pace] phone, 60 fps: the game's own 30 fps mode off (its most extra vsyncs %u -> 0)\n", saved);
+        }
+        *max = 0;
+    } else if (cleared) {
+        *max = saved, cleared = false;
+        LOG("[pace] phone, 30 fps: the game's own 30 fps mode back (%u)\n", saved);
+    }
+}
+#endif
+
 // The held 30 fps mode's present interval (see above): called last in each frame's pace_frame, after its present. The
 // game then waits for the next vsync (a frame that took 20 ms is shown 33 ms after the one before it: the wait is
 // for the next vsync, not one already passed). Held, a frame that started after vsync S may not let the game start
@@ -194,10 +219,20 @@ static uint64_t pace_scene(void) {
 void pace_frame(void) {
     spike_test();
 #if PHONE_DISPLAY
-    // Phone tab, Frame Rate 30: the game's own 30 fps mode all the time (battery, heat), not only while frames don't
-    // fit 60. (60 and 120 pace as below: the game itself never runs past 60 - 120 is the panel's refresh for the
-    // touch controls and menus, runtime/nvn/metal.m.)
-    if (g_settings.phone_frame_rate == PHONE_FPS_30) { hold_cadence(hold_30(true)); return; }
+    // Phone tab, Frame Rate: the player's choice, never changed behind their back.
+    //   30: the game's own 30 fps mode all the time (battery, heat).
+    //   60 / 60 at 120 Hz: never 30 by itself - no hold here, and the game's own 30 fps mode (its frame controller's
+    //   most extra vsyncs, +0x4e3) is off, so frames that don't fit 60 show as they come (45, 50...) instead of the
+    //   frame rate halving when the phone warms up. Dynamic Resolution (output_scale.c) can keep 60 instead.
+    //   Drop to 30 FPS When Slow (phone_auto30, off by default): on, the hold below and the game's own mode as on the
+    //   desktop. Independent of Dynamic Resolution (the player's two choices: each acts on its own).
+    bool phone30 = g_settings.phone_frame_rate == PHONE_FPS_30;
+    if (phone30 || !g_settings.phone_auto30) {
+        game_30_mode(phone30);
+        hold_cadence(hold_30(phone30));
+        return;
+    }
+    game_30_mode(true);
 #endif
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }

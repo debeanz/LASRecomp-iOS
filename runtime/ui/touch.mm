@@ -36,8 +36,11 @@
 #import <UIKit/UIKit.h>
 #endif
 
+#include <unistd.h>
+
 extern "C" {
 #include "../input_bind.h"
+#include "../paths.h"
 #include "../settings.h"
 #include "menu.h"
 SDL_Window *ui_window(void);       // runtime/nvn/metal.m
@@ -129,6 +132,8 @@ static float g_zone_x1, g_zone_y0;               // the floating stick's zone: l
 static bool g_shown;                              // main thread: the overlay is up
 static std::atomic<bool> g_draw{false};           // render thread: draw it
 static std::atomic<int> g_panel_w{0}, g_panel_h{0};
+static std::atomic<bool> g_share_req{false};      // the Phone tab's Share Log (render thread) -> touch_frame (main)
+static void share_logs(void);
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;  // g_snap
 static std::vector<Control> g_snap;               // what the render thread draws
 
@@ -367,6 +372,7 @@ void touch_frame(void) {
     if (!enabled()) return;
     SDL_Window *win = ui_window();
     if (!win) return;
+    if (g_share_req.exchange(false)) share_logs();
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(win, &w, &h);
     g_panel_w = w > h ? w : h, g_panel_h = w > h ? h : w;
@@ -544,14 +550,38 @@ float phone_ui_scale(void) {
 #endif
 }
 
+// (the log) every change of a Phone row, from what the rows held before this frame's drawing
+static void log_phone_changes(const Settings &was) {
+    const Settings &s = g_settings;
+    struct { const char *name; int before, now; } rows[] = {
+        {"resolution", was.phone_resolution, s.phone_resolution}, {"dynamic", was.phone_dynamic, s.phone_dynamic},
+        {"aspect", was.phone_aspect, s.phone_aspect}, {"scaling", was.phone_scaling, s.phone_scaling},
+        {"frame_rate", was.phone_frame_rate, s.phone_frame_rate}, {"auto30", was.phone_auto30, s.phone_auto30},
+        {"show_fps", was.show_fps, s.show_fps},
+        {"ui_size", was.phone_ui_size, s.phone_ui_size}, {"touch", was.touch_controls, s.touch_controls},
+        {"touch_opacity", was.touch_opacity, s.touch_opacity}, {"touch_size", was.touch_size, s.touch_size},
+        {"floating_stick", was.touch_floating, s.touch_floating}, {"vibration", was.phone_vibration, s.phone_vibration},
+        {"upscaler", was.upscaler, s.upscaler}, {"antialias", was.antialias, s.antialias}};
+    for (auto &r : rows)
+        if (r.before != r.now) fprintf(stderr, "[phone] setting %s: %d -> %d\n", r.name, r.before, r.now);
+}
+
 void phone_rows_draw(void) {
+    static Settings was;  // (the rows' values before this frame: what changed goes to the log)
+    static bool have;
+    if (have) log_phone_changes(was);
+    was = g_settings, have = true;
     opt_section("Display");
     char native[48];
     snprintf(native, sizeof native, "Native (%dx%d)", g_panel_w.load(), g_panel_h.load());
     const char *res[N_PHONE_RES] = {native, "2106x1084", "1920x1080", "1600x900", "1280x720"};
     opt_choice("Resolution", &g_settings.phone_resolution, res, N_PHONE_RES, PHONE_RES_NATIVE,
                "How many lines the game renders, scaled to the screen. Native: the screen's own. Lower is easier on "
-               "the battery and keeps the iPhone cooler; the image is scaled up with the Video tab's upscaler.");
+               "the battery and keeps the iPhone cooler; the image is scaled up with the Upscaler below.");
+    opt_toggle("Dynamic Resolution", &g_settings.phone_dynamic, false,
+               "On: keeps 60 fps - when the iPhone can't keep up (a busy scene, or the phone warming up after a while) "
+               "the game is drawn a little lower than the Resolution above, and goes back up when it can. Off: always "
+               "the Resolution above.");
     static const char *aspects[N_PHONE_ASPECTS] = {"iPhone Default", "1.943:1", "16:9", "4:3"};
     opt_choice("Aspect Ratio", &g_settings.phone_aspect, aspects, N_PHONE_ASPECTS, PHONE_ASPECT_DEVICE,
                "The shape of the game image. iPhone Default fills the screen and shows more of the island at the "
@@ -560,11 +590,17 @@ void phone_rows_draw(void) {
     opt_choice("Screen Scaling", &g_settings.phone_scaling, scaling, 2, PHONE_SCALE_FIT,
                "Fit: the image keeps its shape, with black bars around it. Stretch: it is stretched over the whole "
                "screen.");
-    static const char *fps[] = {"30 FPS", "60 FPS", "120 FPS (ProMotion)"};
+    static const char *fps[] = {"30 FPS", "60 FPS", "60 FPS, 120 Hz"};
     opt_choice("Frame Rate", &g_settings.phone_frame_rate, fps, 3, PHONE_FPS_60,
-               "30: the game's own 30 fps mode all the time - cooler, longer battery. 60: as on the Switch. 120: on a "
-               "ProMotion screen each frame is shown at the next 120 Hz refresh, so it appears sooner; the game itself "
-               "runs at up to 60.");
+               "30: the game's own 30 fps mode all the time - cooler, longer battery. 60: as on the Switch, the most "
+               "the game itself runs at (its timing is built on 60 frames a second). 60 FPS, 120 Hz: on a ProMotion "
+               "screen each frame is shown at the next 120 Hz refresh, a little sooner after your input - still 60 "
+               "frames. (Inside LiveContainer the screen may stay at 60 Hz: it uses LiveContainer's settings.)");
+    if (g_settings.phone_frame_rate == PHONE_FPS_30) opt_disable_next();  // (30 already)
+    opt_toggle("Drop to 30 FPS When Slow", &g_settings.phone_auto30, false,
+               "Off: the frame rate is never capped to 30 by itself - when the iPhone can't keep up (a busy scene, the "
+               "phone warm) you see the frame rate it manages, like 45 or 50. On: the game switches to its own steady "
+               "30 fps mode then, as on the Switch.");
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
     static const char *ui[] = {"Small", "Default", "Large"};
     opt_choice("UI Size", &g_settings.phone_ui_size, ui, 3, 1, "The size of these menus and the overlays.");
@@ -583,4 +619,35 @@ void phone_rows_draw(void) {
     opt_toggle("Vibration", &g_settings.phone_vibration, true,
                "A light tap when you press an on-screen control, and the game's rumble on the iPhone itself when no "
                "controller is connected.");
+
+    opt_section("Logs");
+    if (opt_button("Share Log", "Sends this session's log (lasrecomp.log: frame rate, resolution, heat, memory, "
+                                "settings, errors) with AirDrop, Messages, Files... - for bug reports."))
+        g_share_req = true;
 }
+
+// ------------------------------------------------------------------ Share Log (main thread: UIKit)
+#if TOUCH_PHONE && defined(__OBJC__)
+static void share_logs(void) {
+    fflush(stderr);
+    NSMutableArray *items = [NSMutableArray array];
+    for (const char *name : {"lasrecomp.log", "last_error.txt"}) {
+        char p[1200];
+        snprintf(p, sizeof p, "%s/%s", rt_data_root(), name);
+        if (access(p, R_OK) == 0) [items addObject:[NSURL fileURLWithPath:@(p)]];
+    }
+    SDL_Window *win = ui_window();
+    UIWindow *w = win ? (__bridge UIWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(win),
+                                                                    SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL) : nil;
+    UIViewController *vc = w.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    if (!vc || items.count == 0) { fprintf(stderr, "[phone] Share Log: nothing to share / no window\n"); return; }
+    UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+    a.popoverPresentationController.sourceView = vc.view;  // (iPad: a popover from the middle of the screen)
+    a.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(vc.view.bounds), CGRectGetMidY(vc.view.bounds), 1, 1);
+    [vc presentViewController:a animated:YES completion:nil];
+    fprintf(stderr, "[phone] Share Log: %lu file(s)\n", (unsigned long)items.count);
+}
+#else
+static void share_logs(void) {}
+#endif

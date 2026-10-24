@@ -440,14 +440,22 @@ void output_scale_log(unsigned long long frame, double dw, double dh, const OutS
 static const double PHONE_ASPECT[N_PHONE_ASPECTS] = {0, 2106.0 / 1084.0, 16.0 / 9.0, 4.0 / 3.0};
 static const double PHONE_LINES[N_PHONE_RES] = {0, 1084, 1080, 900, 720};
 
-static void phone_output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
-    static int p_res = -1, p_aspect, p_scaling;  // (a change of load: the pacer starts over, as for the Video tab)
+static bool g_dyn_in_use;  // this frame's render scale came from dynamic resolution
+
+// Phone, Dynamic Resolution on: the chosen Resolution is the most; while the GPU can't hold 60 (a heavy scene, or the
+// iPhone warming up and slowing down after a minute) the image is drawn a step lower, and goes back up when there's
+// room - the desktop's Dynamic (dyn_update above) with the chosen resolution in place of the window's. Independent of
+// the Drop to 30 FPS When Slow option (pace.c).
+static void phone_output_scale(double dw, double dh, bool reshape_allowed, double now, double game_ms, double win_ms,
+                               OutScale *o) {
+    static int p_res = -1, p_aspect, p_scaling, p_dyn;  // (a change of load: the pacer starts over, as for the Video tab)
     if (p_res >= 0 && (p_res != g_settings.phone_resolution || p_aspect != g_settings.phone_aspect ||
-                       p_scaling != g_settings.phone_scaling)) {
+                       p_scaling != g_settings.phone_scaling || p_dyn != g_settings.phone_dynamic)) {
         extern void pace_settings_changed(const char *what);
         pace_settings_changed("resolution");
     }
     p_res = g_settings.phone_resolution, p_aspect = g_settings.phone_aspect, p_scaling = g_settings.phone_scaling;
+    p_dyn = g_settings.phone_dynamic;
     int ai = g_settings.phone_aspect >= 0 && g_settings.phone_aspect < N_PHONE_ASPECTS ? g_settings.phone_aspect : 0;
     double a = ai ? PHONE_ASPECT[ai] : dw / dh;
     bool stretch = g_settings.phone_scaling == PHONE_SCALE_STRETCH;
@@ -472,8 +480,16 @@ static void phone_output_scale(double dw, double dh, bool reshape_allowed, OutSc
     double ax = h * shape, ay = h;
     double cap = fmin(MAX_TEX / (1920.0 * ax), MAX_TEX / (1080.0 * ay));
     if (cap < 1.0) { ax *= cap; ay *= cap; }
-    o->ax = o->sx = ax;
-    o->ay = o->sy = ay;
+    double dyn = 1.0;  // (the targets stay allocated at the chosen size; a lower step draws into a part of them)
+    g_dyn_in_use = g_settings.phone_dynamic;
+    if (g_dyn_in_use) {
+        static double pinned = -1;
+        if (pinned < 0) pinned = getenv("LARECOMP_DYN_TEST") ? atof(getenv("LARECOMP_DYN_TEST")) : 0;
+        if (pinned > 0) dyn = pinned;
+        else { dyn_update(now, game_ms, win_ms, lines); dyn = g_dyn; }
+    }
+    o->ax = ax, o->sx = ax * dyn;
+    o->ay = ay, o->sy = ay * dyn;
     o->shape = shape;
     o->vw = vw, o->vh = vh;
     o->vx = (dw - vw) / 2, o->vy = (dh - vh) / 2;
@@ -485,8 +501,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     static int test_override = -1;  // (the test overrides below still work; looked up once, not every frame)
     if (test_override < 0) test_override = getenv("LARECOMP_SCALE") || getenv("LARECOMP_WIDE_TEST");
     if (!test_override) {
-        (void)now, (void)game_ms, (void)win_ms;
-        phone_output_scale(dw, dh, reshape_allowed, o);
+        phone_output_scale(dw, dh, reshape_allowed, now, game_ms, win_ms, o);
         return;
     }
 #endif

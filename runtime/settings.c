@@ -232,6 +232,8 @@ void settings_load(void) {
             for (int i = 0; i < N_ENEMY_COLOUR_MODES; i++) if (!strcmp(val, k_enemy_colour_keys[i])) g_settings.enemy_colours = i;
         }
         else if (!strcmp(key, "phone_resolution")) g_settings.phone_resolution = atoi(val);
+        else if (!strcmp(key, "phone_dynamic")) g_settings.phone_dynamic = atoi(val) != 0;
+        else if (!strcmp(key, "phone_auto30")) g_settings.phone_auto30 = atoi(val) != 0;
         else if (!strcmp(key, "phone_aspect")) g_settings.phone_aspect = atoi(val);
         else if (!strcmp(key, "phone_scaling")) g_settings.phone_scaling = atoi(val) ? PHONE_SCALE_STRETCH : PHONE_SCALE_FIT;
         else if (!strcmp(key, "phone_frame_rate")) g_settings.phone_frame_rate = atoi(val);
@@ -318,8 +320,9 @@ void settings_save(void) {
     }
     fprintf(f, "enemy_colours = %s\n", k_enemy_colour_keys[g_settings.enemy_colours]);
     fprintf(f, "screen_filter = %s\n", k_screen_filter_keys[g_settings.screen_filter]);
-    fprintf(f, "phone_resolution = %d\nphone_aspect = %d\nphone_scaling = %d\nphone_frame_rate = %d\nphone_ui_size = %d\n",
-            g_settings.phone_resolution, g_settings.phone_aspect, g_settings.phone_scaling, g_settings.phone_frame_rate,
+    fprintf(f, "phone_resolution = %d\nphone_dynamic = %d\nphone_aspect = %d\nphone_scaling = %d\nphone_frame_rate = %d\n"
+            "phone_auto30 = %d\nphone_ui_size = %d\n", g_settings.phone_resolution, g_settings.phone_dynamic,
+            g_settings.phone_aspect, g_settings.phone_scaling, g_settings.phone_frame_rate, g_settings.phone_auto30,
             g_settings.phone_ui_size);
     fprintf(f, "touch_controls = %d\ntouch_opacity = %d\ntouch_size = %d\ntouch_floating_stick = %d\nphone_vibration = %d\n",
             g_settings.touch_controls, g_settings.touch_opacity, g_settings.touch_size, g_settings.touch_floating,
