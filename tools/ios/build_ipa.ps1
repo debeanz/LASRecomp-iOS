@@ -81,7 +81,9 @@ if (-not $SkipUpload) {
 if (-not $Token) { $Token = (gh auth token) }
 gh variable set LAS_PRIVATE_REPO -R $CodeRepo --body $DataRepo | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "could not set the variable LAS_PRIVATE_REPO on $CodeRepo" }
-$Token | gh secret set LAS_PRIVATE_TOKEN -R $CodeRepo | Out-Null
+# (--body, not a pipe: Windows PowerShell 5.1 adds a line break to what it pipes into a program - the token then
+# fails with "Bad credentials")
+gh secret set LAS_PRIVATE_TOKEN -R $CodeRepo --body $Token.Trim() | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "could not set the secret LAS_PRIVATE_TOKEN on $CodeRepo" }
 
 Write-Host "Starting the iOS build on $CodeRepo"
