@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "game_addresses.h"
 #include "gamelib.h"
@@ -257,6 +258,19 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-') root = arg_root;
     }
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+#if TARGET_OS_IPHONE
+    // The game files may come inside the app (tools/ios/add_game_files.ps1: <app>/extracted, read-only - the app never
+    // writes there): used when the data folder has none of its own. Copied-in files (Files app) win.
+    if (!strcmp(root, "extracted")) {
+        struct stat st;
+        static char in_app[1024];
+        if (stat("extracted/exefs/main", &st) != 0 && rt_resource("extracted/exefs/main", NULL, in_app, sizeof in_app)) {
+            in_app[strlen(in_app) - strlen("/exefs/main")] = 0;
+            root = in_app;
+            LOG("[boot] game files inside the app: %s\n", root);
+        }
+    }
+#endif
     for (bool title = !skip_launcher;;) {
         if (title && no_launcher) {
             fprintf(stderr, "[main] LARECOMP_NO_LAUNCHER is set: not showing the start screen - exiting\n");

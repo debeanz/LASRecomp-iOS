@@ -27,7 +27,24 @@ On a Mac with Xcode, by hand: `make deps-ios`, put your files in `extracted/`, `
 
 ## Install
 
-1. Install the IPA with SideStore or AltStore.
+**With the game files inside the IPA** (one ~6 GB file, nothing to copy afterwards - e.g. sent to the phone and
+installed in LiveContainer):
+
+```
+powershell -ExecutionPolicy Bypass -File tools\ios\add_game_files.ps1 -Ipa build\ios\LASRecomp-<version>-ios.ipa -GameFiles "D:\path\to\your\extracted\game"
+```
+
+It runs on your PC only and writes `...-with-game.ipa` next to the IPA. It holds your whole game: keep it to yourself.
+The app uses these files when its own folder has none (files copied in later win).
+
+**LiveContainer**: apps inside it run with LiveContainer's own signature, so the game's entitlements (extended virtual
+addressing, increased memory limit) must be in how LiveContainer itself was signed; without them LAS Recomp says at
+start that it couldn't reserve its memory. Its folder is in LiveContainer's: Files > On My iPhone > LiveContainer >
+Data > Application > (LAS Recomp's) > Documents.
+
+**Or copy them in after installing:**
+
+1. Install the IPA with SideStore, AltStore or LiveContainer.
 2. Open LAS Recomp once (it creates its folder), then copy your `exefs` and `romfs` folders into
    **Files > On My iPhone > LAS Recomp > extracted** (or from a computer: Finder / the Apple Devices app > your iPhone >
    Files > LAS Recomp). The romfs is about 6 GB.
