@@ -45,14 +45,19 @@ static void color_block(const uint8_t *b, uint8_t *out, size_t pitch, bool punch
 }
 
 // ------------------------------------------------------------------ BC4 / BC5 (RGTC), and BC3's alpha
+// The in-between values in 64ths, as Apple GPUs interpolate them (BPTC's 3-bit weights, not exact sevenths: the game
+// looks on a Mac as their decoding makes it, and tools/ios/test_bcdec.m checks this against it); the 6-value mode's
+// fifths likewise.
+static const int RGTC_W8[6] = {9, 18, 27, 37, 46, 55}, RGTC_W6[4] = {13, 26, 38, 51};
+
 // One channel: texel i's value at out[(i/4) * pitch + (i%4) * step]
 static void channel_unorm(const uint8_t *b, uint8_t *out, size_t pitch, unsigned step) {
-    unsigned a0 = b[0], a1 = b[1];
+    int a0 = b[0], a1 = b[1];
     uint8_t p[8] = {(uint8_t)a0, (uint8_t)a1};
     if (a0 > a1)
-        for (unsigned i = 1; i < 7; i++) p[i + 1] = (uint8_t)(((7 - i) * a0 + i * a1 + 3) / 7);
+        for (int i = 0; i < 6; i++) p[i + 2] = (uint8_t)((a0 * (64 - RGTC_W8[i]) + a1 * RGTC_W8[i] + 32) >> 6);
     else {
-        for (unsigned i = 1; i < 5; i++) p[i + 1] = (uint8_t)(((5 - i) * a0 + i * a1 + 2) / 5);
+        for (int i = 0; i < 4; i++) p[i + 2] = (uint8_t)((a0 * (64 - RGTC_W6[i]) + a1 * RGTC_W6[i] + 32) >> 6);
         p[6] = 0, p[7] = 255;
     }
     uint64_t bits = 0;
@@ -65,10 +70,17 @@ static void channel_snorm(const uint8_t *b, uint8_t *out, size_t pitch, unsigned
     if (a0 < -127) a0 = -127;  // (-128 and -127 are both -1.0)
     if (a1 < -127) a1 = -127;
     int p[8] = {a0, a1};
+    // (rounded to nearest, halves away from zero: the 64ths are signed here)
     if (a0 > a1)
-        for (int i = 1; i < 7; i++) p[i + 1] = ((7 - i) * a0 + i * a1) / 7;
+        for (int i = 0; i < 6; i++) {
+            int v = a0 * (64 - RGTC_W8[i]) + a1 * RGTC_W8[i];
+            p[i + 2] = v >= 0 ? (v + 32) >> 6 : -((-v + 32) >> 6);
+        }
     else {
-        for (int i = 1; i < 5; i++) p[i + 1] = ((5 - i) * a0 + i * a1) / 5;
+        for (int i = 0; i < 4; i++) {
+            int v = a0 * (64 - RGTC_W6[i]) + a1 * RGTC_W6[i];
+            p[i + 2] = v >= 0 ? (v + 32) >> 6 : -((-v + 32) >> 6);
+        }
         p[6] = -127, p[7] = 127;
     }
     uint64_t bits = 0;
