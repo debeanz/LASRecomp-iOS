@@ -93,6 +93,8 @@ typedef struct {
     volatile bool quit;  // reboot (audio_reset)
 } Renderer;
 
+static volatile bool g_audio_paused;  // (audio_set_paused: the app in the background)
+
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 // One sample of DSP ADPCM at absolute sample index s (frames of 8 bytes: header + 14 nibbles).
@@ -941,7 +943,7 @@ static void renderer_open_output(Renderer *r) {
     r->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (!r->stream) { LOG("[audren] SDL audio open failed: %s\n", SDL_GetError()); return; }
     if (getenv("LARECOMP_AUDIO_GAIN")) SDL_SetAudioStreamGain(r->stream, (float)atof(getenv("LARECOMP_AUDIO_GAIN")));
-    SDL_ResumeAudioStreamDevice(r->stream);
+    if (!g_audio_paused) SDL_ResumeAudioStreamDevice(r->stream);  // (opened paused; in the background it stays so)
 }
 
 static void audio_renderer(Service *s, IpcReq *req, IpcResp *resp) {
@@ -1055,6 +1057,23 @@ static void audio_track(Renderer *r, AudioOut *a) {
         if (a && !g_outs[i]) { g_outs[i] = a; a = NULL; }
     }
     pthread_mutex_unlock(&g_track_lock);
+}
+
+// The app in the background (iOS: runtime/nvn/metal.m app_state_watch): every output paused, so nothing plays from
+// the home screen. The renderer / audio out threads then stop too - they wait while their stream's queue is full -
+// along with the game, which waits for its frames. Outputs opened meanwhile start paused.
+
+void audio_set_paused(bool paused) {
+    pthread_mutex_lock(&g_track_lock);
+    g_audio_paused = paused;
+    int n = 0;
+    for (int i = 0; i < 8; i++) {
+        SDL_AudioStream *st[2] = {g_rens[i] ? g_rens[i]->stream : NULL, g_outs[i] ? g_outs[i]->stream : NULL};
+        for (int k = 0; k < 2; k++)
+            if (st[k]) { if (paused) SDL_PauseAudioStreamDevice(st[k]); else SDL_ResumeAudioStreamDevice(st[k]); n++; }
+    }
+    pthread_mutex_unlock(&g_track_lock);
+    LOG("[audio] %s (%d outputs)\n", paused ? "paused: the app is in the background" : "resumed", n);
 }
 
 static void audout_free(AudioOut *a) {
@@ -1229,7 +1248,7 @@ SERVICE("audout:u", audout_u) {
             a->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
             if (a->stream) {
                 if (getenv("LARECOMP_AUDIO_GAIN")) SDL_SetAudioStreamGain(a->stream, (float)atof(getenv("LARECOMP_AUDIO_GAIN")));
-                SDL_ResumeAudioStreamDevice(a->stream);
+                if (!g_audio_paused) SDL_ResumeAudioStreamDevice(a->stream);
             }
         }
         pthread_create(&a->thread, NULL, audout_thread, a);

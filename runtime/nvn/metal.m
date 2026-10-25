@@ -1413,8 +1413,19 @@ static void phone_log_start(void) {  // (once: the device's GPU and limits, and 
 static atomic_bool g_in_background;
 static bool SDLCALL app_state_watch(void *ud, SDL_Event *e) {
     (void)ud;
-    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) { atomic_store(&g_in_background, true); LOG("[app] background: paused\n"); }
-    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { atomic_store(&g_in_background, false); LOG("[app] foreground\n"); }
+    // (the sound too: an app allowed to play audio in the background - LiveContainer - would otherwise keep the game's
+    //  sound and its audio threads going on the home screen: runtime/services/audio.c audio_set_paused)
+    extern void audio_set_paused(bool paused);
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+        atomic_store(&g_in_background, true);
+        audio_set_paused(true);
+        LOG("[app] background: paused\n");
+    }
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+        atomic_store(&g_in_background, false);
+        audio_set_paused(false);
+        LOG("[app] foreground\n");
+    }
     if (e->type == SDL_EVENT_LOW_MEMORY) {
         double used, left;
         phone_memory(&used, &left);
